@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>BracketFlow — トーナメント作成・運営</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  <link rel="stylesheet" href="./styles.css" />
+  <style id="dynamic-print-page-style">@page { size: A4 portrait; margin: 7mm; }</style>
+</head>
+<body class="h-screen w-screen flex flex-col select-none bg-slate-100 text-slate-900">
+
+  <!-- トップヘッダー：コンパクト＆全幅活用 -->
+  <header class="no-print bg-slate-900 text-white px-3 sm:px-4 h-12 flex items-center justify-between gap-2 shadow-md z-30 shrink-0">
+    <!-- 左側：ロゴ＆2ステップ切替 -->
+    <div class="flex items-center gap-2.5 min-w-0">
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="w-7 h-7 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-600 text-slate-950 flex items-center justify-center shadow-sm" aria-hidden="true">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 6h5v5H4" />
+            <path d="M4 18h5v-5H4" />
+            <path d="M9 8.5h5v7H9" />
+            <path d="M14 12h6" />
+          </svg>
+        </span>
+        <div class="leading-tight hidden md:block">
+          <h1 class="text-sm font-bold tracking-tight text-white">BracketFlow</h1>
+          <div class="text-[9px] text-slate-400 font-medium tracking-wider">TOURNAMENT STUDIO</div>
+        </div>
+      </div>
+
+      <!-- メイン画面タブ -->
+      <nav class="flex items-center bg-slate-800/90 p-0.5 rounded-lg border border-slate-700/80">
+        <button id="main-tab-reg" onclick="switchMainView('registration')"
+                class="px-2.5 py-1 text-xs font-bold rounded-md bg-blue-600 text-white shadow transition flex items-center gap-1">
+          <span>1. 名簿・設定</span>
+          <span id="reg-count-pill" class="bg-slate-950/40 text-blue-100 text-[10px] px-1.5 py-0.2 rounded-full">0組</span>
+        </button>
+        <button id="main-tab-tourney" onclick="switchMainView('tournament')"
+                class="px-2.5 py-1 text-xs font-bold rounded-md text-slate-300 hover:text-white transition flex items-center gap-1">
+          <span>2. トーナメント表</span>
+        </button>
+        <button id="main-tab-oop" onclick="switchMainView('oop')"
+                class="px-2.5 py-1 text-xs font-bold rounded-md text-slate-300 hover:text-white transition flex items-center gap-1">
+          <span>3. 進行表・運営</span>
+          <span id="oop-live-pill" class="hidden bg-rose-500 text-white text-[10px] px-1.5 py-0.2 rounded-full">0</span>
+        </button>
+        <button id="main-tab-spectator" onclick="switchMainView('spectator')"
+                class="px-2.5 py-1 text-xs font-bold rounded-md text-emerald-300 hover:text-white transition flex items-center gap-1"
+                title="生徒・保護者向けのスマホ閲覧画面をプレビュー">
+          <span>公開ビュー</span>
+        </button>
+      </nav>
+
+      <button id="btn-open-publish-modal" onclick="openPublishModal()"
+              class="hidden xl:inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+              title="公開ON/OFF・パスコード・名字のみ表示・QRコード・スタッフPIN設定">
+        <span id="header-publish-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+        <span>公開設定・QR</span>
+      </button>
+    </div>
+
+    <!-- 右側：データ入出力（JSON / Excel / PDF）＆印刷 -->
+    <div class="flex items-center gap-1.5 shrink-0">
+      <!-- 保存ドロップダウン（JSON / Excel / PDF） -->
+      <div class="relative">
+        <button id="btn-export-menu" onclick="toggleExportMenu()"
+                class="px-2.5 py-1 text-xs bg-emerald-600 hover:bg-emerald-500 border border-emerald-500 rounded-md text-white font-bold transition flex items-center gap-1 shadow-sm"
+                title="JSON / Excel / PDF形式で保存">
+          <span>保存</span>
+          <span class="text-[10px] opacity-85">▾</span>
+        </button>
+
+        <div id="export-menu-popover" class="hidden absolute right-0 top-full mt-1.5 w-64 bg-white text-slate-800 rounded-xl shadow-2xl border border-slate-200 p-1.5 z-50 space-y-1">
+          <button onclick="exportJsonState(); closeExportMenu();"
+                  class="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-100 transition flex items-start gap-2.5">
+            <span class="mt-0.5 px-1.5 py-0.5 text-[10px] font-bold rounded bg-slate-200 text-slate-800 shrink-0">JSON</span>
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-slate-900">JSON形式で保存（バックアップ）</div>
+              <div class="text-[10px] text-slate-500">名簿・配置・塗色・スコアを完全保存</div>
+            </div>
+          </button>
+          <button onclick="exportExcelState(); closeExportMenu();"
+                  class="w-full text-left px-3 py-2 rounded-lg hover:bg-emerald-50 transition flex items-start gap-2.5">
+            <span class="mt-0.5 px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-100 text-emerald-800 shrink-0">XLSX</span>
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-slate-900">Excel形式で保存（3シート）</div>
+              <div class="text-[10px] text-slate-500">出場名簿・トーナメント配置・試合結果</div>
+            </div>
+          </button>
+          <button onclick="exportPdfState(); closeExportMenu();"
+                  class="w-full text-left px-3 py-2 rounded-lg hover:bg-rose-50 transition flex items-start gap-2.5">
+            <span class="mt-0.5 px-1.5 py-0.5 text-[10px] font-bold rounded bg-rose-100 text-rose-800 shrink-0">PDF</span>
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-slate-900">PDFファイルで保存</div>
+              <div class="text-[10px] text-slate-500">現在の印刷設定（配布/確認・縦横・塗）で出力</div>
+            </div>
+          </button>
+        </div>
+      </div>
+
+      <label class="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-md text-slate-200 cursor-pointer transition"
+             title="保存したJSONファイルを読み込み">
+        読込
+        <input type="file" id="json-import-input" accept=".json" class="hidden" onchange="importJsonState(event)" />
+      </label>
+
+      <div class="h-4 w-px bg-slate-700 mx-0.5 hidden sm:block"></div>
+
+      <!-- 印刷モード切替（配布用/確認用・塗りつぶし印刷ON/OFF・縦/横） -->
+      <div class="hidden sm:flex items-center bg-slate-800 p-0.5 rounded-md border border-slate-700 gap-0.5">
+        <button id="btn-print-dist" onclick="setPrintMode('distribution')" class="px-2 py-0.5 text-[11px] rounded font-bold bg-emerald-600 text-white transition" title="印刷時に確認用バッジ（略称＋番手）を隠す">配布用</button>
+        <button id="btn-print-check" onclick="setPrintMode('check')" class="px-2 py-0.5 text-[11px] rounded font-bold text-slate-300 hover:text-white transition" title="印刷時に確認用バッジ（略称＋番手）を表示">確認用</button>
+      </div>
+
+      <button id="btn-print-fills-toggle" onclick="togglePrintFills()"
+              class="hidden md:inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-md font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/50 transition"
+              title="印刷・PDF出力時に任意の塗りつぶしを含めるか切り替え">
+        <span>印刷塗:</span>
+        <span id="print-fills-header-state">ON</span>
+      </button>
+
+      <div class="hidden lg:flex items-center bg-slate-800 p-0.5 rounded-md border border-slate-700 gap-0.5">
+        <button id="btn-orient-portrait" onclick="setPrintOrientation('portrait')" class="px-2 py-0.5 text-[11px] rounded font-bold bg-slate-600 text-white transition">A4縦</button>
+        <button id="btn-orient-landscape" onclick="setPrintOrientation('landscape')" class="px-2 py-0.5 text-[11px] rounded font-bold text-slate-300 hover:text-white transition">A4横</button>
+      </div>
+
+      <button onclick="executePrint()"
+              class="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-md shadow transition flex items-center gap-1.5">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
+        <span>印刷 / PDF</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- 大会・複数種目（会場別）切替バー -->
+  <div id="event-switcher-bar" class="no-print bg-slate-800 text-slate-200 border-b border-slate-700 px-3 sm:px-4 py-1.5 flex items-center justify-between gap-2 shrink-0 z-20">
+    <div class="flex items-center gap-2 min-w-0 flex-1 overflow-x-auto">
+      <div class="flex items-center gap-1.5 shrink-0 pr-2 border-r border-slate-700">
+        <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">大会</span>
+        <input type="text" id="parent-tournament-name-input" value="令和8年度 春季地区大会"
+               oninput="updateParentTournamentName(this.value)"
+               class="bg-slate-900/80 hover:bg-slate-900 focus:bg-slate-950 text-xs font-bold text-white px-2 py-0.5 rounded border border-slate-700 focus:border-emerald-400 focus:outline-none w-44 sm:w-56"
+               title="親大会名（生徒・保護者公開ページのタイトルになります）" />
+      </div>
+
+      <div id="event-tabs-container" class="flex items-center gap-1 shrink-0">
+        <!-- JS描画: 男子個人 / 女子個人 など -->
+      </div>
+
+      <button onclick="openEventModal('add')"
+              class="px-2 py-0.5 text-[11px] font-bold rounded bg-slate-700/80 hover:bg-emerald-600 text-slate-200 hover:text-white border border-slate-600 transition shrink-0"
+              title="この大会に新しい種目（別会場・別進行表）を追加">
+        ＋ 種目追加
+      </button>
+    </div>
+
+    <div class="flex items-center gap-1.5 shrink-0">
+      <span id="active-event-venue-pill" class="hidden md:inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded bg-slate-900/70 text-emerald-300 border border-slate-700">
+        会場: 第1会場
+      </span>
+      <button onclick="openEventModal('edit')"
+              class="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-700/70 hover:bg-slate-600 text-slate-200 transition"
+              title="現在の種目名・会場名・複製・削除を管理">
+        種目設定
+      </button>
+      <button onclick="openPublishModal()"
+              class="xl:hidden px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-600 hover:bg-emerald-500 text-white transition">
+        公開・QR
+      </button>
+    </div>
+  </div>
+
+  <!-- メインコンテナ -->
+  <div id="app-shell" class="flex-1 flex overflow-hidden relative">
+
+    <!-- =================================================================== -->
+    <!-- 画面1：生徒登録・名簿・抽選ルール・学校略称設定画面                  -->
+    <!-- =================================================================== -->
+    <div id="view-registration" class="flex-1 flex flex-col overflow-hidden bg-slate-100">
+
+      <!-- 上段バー：大会タイトル・試合形式・仮組設定 ＆ 主要アクション -->
+      <div class="bg-white border-b border-slate-200 px-4 py-3 shrink-0">
+        <div class="max-w-[1440px] mx-auto flex flex-wrap items-end justify-between gap-3">
+          <div class="flex flex-wrap items-end gap-3 flex-1 min-w-[260px]">
+            <div class="flex-1 min-w-[210px] max-w-md">
+              <label class="block text-[11px] font-bold text-slate-500 mb-0.5">大会タイトル</label>
+              <input type="text" id="tournament-title-input" value="大会トーナメント表"
+                     oninput="syncTitle(this.value)"
+                     class="w-full px-3 py-1.5 text-sm font-bold border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
+            </div>
+
+            <!-- 試合形式設定（5ゲーム / 7ゲーム） -->
+            <div>
+              <label class="block text-[11px] font-bold text-slate-500 mb-0.5">試合形式</label>
+              <select id="match-format-select" onchange="setMatchFormat(this.value)"
+                      class="px-2.5 py-1.5 h-[34px] text-xs font-bold border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:border-blue-500">
+                <option value="5">5ゲームマッチ（3G先取）</option>
+                <option value="7" selected>7ゲームマッチ（4G先取）</option>
+              </select>
+            </div>
+
+            <!-- 仮組設定（ペア数 ＋ 学校数） -->
+            <div class="flex items-end gap-1.5 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200">
+              <div>
+                <label class="block text-[10px] font-bold text-slate-500 mb-0.5">仮組ペア数</label>
+                <input type="number" id="entry-count-input" min="2" max="256" value="15"
+                       class="w-16 px-2 py-1 text-xs font-bold border border-slate-300 rounded-md text-center bg-white focus:outline-none focus:border-blue-500" />
+              </div>
+              <div>
+                <label class="block text-[10px] font-bold text-slate-500 mb-0.5">学校数</label>
+                <input type="number" id="dummy-school-count-input" min="1" max="64" value="6"
+                       class="w-14 px-2 py-1 text-xs font-bold border border-slate-300 rounded-md text-center bg-white focus:outline-none focus:border-blue-500" />
+              </div>
+              <button onclick="buildDummyFrame()"
+                      class="px-2.5 py-1 h-[28px] bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold rounded-md transition">
+                仮組生成
+              </button>
+              <button onclick="loadRealisticSampleData()"
+                      class="px-2.5 py-1 h-[28px] bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 text-xs font-bold rounded-md transition"
+                      title="シードや複数校が含まれたリアルな15組サンプルを読み込みます">
+                サンプル15組
+              </button>
+            </div>
+          </div>
+
+          <button onclick="generateAndOpenTournament()"
+                  class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold rounded-lg shadow-sm transition flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            <span>トーナメント自動生成して開く</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 本体：左右2ペイン -->
+      <div class="flex-1 overflow-y-auto lg:overflow-hidden p-3 sm:p-4">
+        <div class="max-w-[1440px] mx-auto h-full grid grid-cols-1 lg:grid-cols-12 gap-4">
+
+          <!-- 左ペイン (4/12)：常設Excel読込＋生成前クイック診断 ＋ 3タブ設定パネル -->
+          <section class="lg:col-span-4 flex flex-col gap-3 overflow-hidden">
+
+            <!-- 常設カード：Excel / CSV 4項目読込 ＆ 生成前クイック診断 -->
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-3.5 space-y-2.5 shrink-0">
+              <div class="flex items-center justify-between gap-2">
+                <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                  <span class="w-1.5 h-3.5 bg-emerald-500 rounded-full"></span>
+                  Excel / CSV 名簿読込（4項目）
+                </h2>
+                <button onclick="downloadSampleExcel()" class="text-[11px] bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded font-bold transition shrink-0">
+                  サンプルExcel
+                </button>
+              </div>
+
+              <label id="excel-dropzone"
+                     ondragover="handleExcelDragOver(event)"
+                     ondragleave="handleExcelDragLeave(event)"
+                     ondrop="handleExcelDrop(event)"
+                     class="flex items-center justify-between gap-3 border-2 border-dashed border-slate-300 hover:border-emerald-500 rounded-lg px-3 py-2.5 bg-slate-50 hover:bg-emerald-50/30 cursor-pointer transition">
+                <div class="flex items-center gap-2.5 min-w-0">
+                  <svg class="w-6 h-6 text-emerald-600/80 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+                  <div class="min-w-0">
+                    <div class="text-xs font-bold text-slate-800 truncate">ファイル選択 または ここへドロップ</div>
+                    <div class="text-[10px] text-slate-500 truncate">①番手 / ②生徒A / ③生徒B / ④学校名（最大256組）</div>
+                  </div>
+                </div>
+                <span class="px-2 py-1 text-[11px] font-bold bg-white border border-slate-300 rounded-md text-slate-700 shrink-0">選択</span>
+                <input type="file" id="excel-file-input" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleSpreadsheetUpload(event)" />
+              </label>
+
+              <!-- 生成前クイック診断バー -->
+              <div id="precheck-summary-bar" class="rounded-lg border border-slate-200 bg-slate-50/90 px-2.5 py-2 text-[11px] space-y-1">
+                <!-- JSで自動描画 -->
+              </div>
+            </div>
+
+            <!-- 下段カード：3タブ設定パネル（初期表示＝学校優先・略称） -->
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm flex-1 flex flex-col overflow-hidden min-h-[260px]">
+              <div class="grid grid-cols-3 bg-slate-50 border-b border-slate-200 p-1 gap-1 shrink-0 text-[11px] font-bold">
+                <button id="left-tab-alias" onclick="switchRegSubTab('alias')" class="py-1.5 rounded-lg bg-white text-blue-700 shadow-sm border border-slate-200/80 transition">
+                  学校優先・略称
+                </button>
+                <button id="left-tab-rules" onclick="switchRegSubTab('rules')" class="py-1.5 rounded-lg text-slate-600 hover:text-slate-900 transition">
+                  抽選ルール
+                </button>
+                <button id="left-tab-consolation" onclick="switchRegSubTab('consolation')" class="py-1.5 rounded-lg text-slate-600 hover:text-slate-900 transition">
+                  順位決定戦
+                </button>
+              </div>
+
+              <div class="flex-1 overflow-y-auto p-3.5 space-y-3">
+
+                <!-- タブ1（初期表示）：学校優先順位 ＆ 学校略称カスタマイズ -->
+                <div id="reg-panel-alias" class="space-y-2.5">
+                  <div class="bg-blue-50 border border-blue-200 rounded-lg p-2.5 text-[11px] text-blue-900 leading-snug">
+                    上位の学校から順に各山の高優先枠へ配置されます。<b>ドラッグ＆ドロップ</b>（または2回クリック／▲▼）で順位を入れ替えでき、右欄で略称を編集できます。
+                  </div>
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <button onclick="shuffleSchoolOrder(true)" class="px-2 py-1 text-[11px] bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-md transition">
+                      学校順をランダム抽選
+                    </button>
+                    <button onclick="sortSchoolOrderDefault(true)" class="px-2 py-1 text-[11px] bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-bold rounded-md transition">
+                      シード・組数順
+                    </button>
+                    <button onclick="resetAllSchoolAliases()" class="ml-auto text-[11px] text-blue-600 hover:underline font-bold">
+                      略称を自動に戻す
+                    </button>
+                  </div>
+                  <div id="school-alias-editor-list" class="border border-slate-200 rounded-lg divide-y divide-slate-100 text-xs"></div>
+                </div>
+
+                <!-- タブ2：優先順位配置・抽選ルール設定 -->
+                <div id="reg-panel-rules" class="hidden space-y-3">
+                  <div class="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-[11px] text-emerald-900 leading-relaxed space-y-1">
+                    <b class="block">優先順位ベース自動配置ルール</b>
+                    <div>1. <b>学校優先順位の高い順</b>に1〜4番手を4山へ散らし、<b>1〜8シードの下を避けた高優先枠</b>へ配置（<code class="bg-white/80 px-1 rounded">A-B-C-D</code>等 × <code class="bg-white/80 px-1 rounded">in-out-out-in</code>）</div>
+                    <div>2. 同一校に複数シードがある場合は残りの山＋in/outバランスで特例配置</div>
+                    <div>3. <b>5番手以下</b>は最下位番手から<b>1〜8シードの下（1回戦勝上がりで当たる枠）</b>→低優先枠へ配置し、<b>学校全体でA〜D・in/outのバランス</b>を保持（8組以下は8ブロック分散、8組超は同校回避）</div>
+                  </div>
+
+                  <div class="space-y-2" id="reg-rules-checkboxes"></div>
+                </div>
+
+                <!-- タブ3：敗者復活・順位決定戦 -->
+                <div id="reg-panel-consolation" class="hidden space-y-3">
+                  <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">シート下部 順位決定戦枠</label>
+                    <select id="consolation-preset" onchange="applyConsolationPreset(this.value)"
+                            class="w-full px-2.5 py-2 text-xs border border-slate-300 rounded-lg bg-white font-bold">
+                      <option value="none">なし（本戦トーナメントのみ）</option>
+                      <option value="3rd">3位決定戦（準決勝敗者 2ペア）</option>
+                      <option value="5to7">5〜7位・代表決定戦（準々決勝敗者 4ペア）</option>
+                      <option value="9to16">9〜16位決定戦（ベスト16敗者 8ペア）</option>
+                      <option value="custom">カスタム設定（自由タイトル・試合数）</option>
+                    </select>
+                  </div>
+
+                  <div id="consolation-custom-box" class="hidden space-y-2.5 pt-2 border-t border-slate-200">
+                    <div class="grid grid-cols-3 gap-2">
+                      <div class="col-span-2">
+                        <label class="block text-[10px] font-bold text-slate-500 mb-0.5">見出しタイトル</label>
+                        <input type="text" id="consolation-title-input" value="順位決定戦（代表決定戦）"
+                               oninput="updateConsolationConfig()"
+                               class="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg" />
+                      </div>
+                      <div>
+                        <label class="block text-[10px] font-bold text-slate-500 mb-0.5">試合数</label>
+                        <select id="consolation-match-count" onchange="updateConsolationConfig()"
+                                class="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white font-bold">
+                          <option value="1">1試合</option>
+                          <option value="2" selected>2試合</option>
+                          <option value="3">3試合</option>
+                          <option value="4">4試合</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div id="consolation-slots-editor" class="space-y-1.5"></div>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          </section>
+
+          <!-- 右ペイン (8/12)：個別追加フォーム ＋ 登録名簿テーブル -->
+          <section class="lg:col-span-8 flex flex-col gap-3 overflow-hidden">
+
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-3.5 shrink-0">
+              <div class="grid grid-cols-2 sm:grid-cols-12 gap-2 items-end">
+                <div class="col-span-1 sm:col-span-1">
+                  <label class="block text-[10px] font-bold text-slate-500 mb-0.5">番手</label>
+                  <input type="number" id="add-rank" min="1" max="50" value="1"
+                         class="w-full px-2 py-1.5 text-xs font-bold text-center border border-slate-300 rounded-lg" />
+                </div>
+                <div class="col-span-1 sm:col-span-3">
+                  <label class="block text-[10px] font-bold text-slate-500 mb-0.5">生徒A（前衛/後衛）</label>
+                  <input type="text" id="add-p1" placeholder="例: 佐藤 翔太" onkeydown="handleAddKeydown(event)"
+                         class="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500" />
+                </div>
+                <div class="col-span-1 sm:col-span-3">
+                  <label class="block text-[10px] font-bold text-slate-500 mb-0.5">生徒B</label>
+                  <input type="text" id="add-p2" placeholder="例: 鈴木 健太" onkeydown="handleAddKeydown(event)"
+                         class="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500" />
+                </div>
+                <div class="col-span-1 sm:col-span-3">
+                  <label class="block text-[10px] font-bold text-slate-500 mb-0.5">学校名</label>
+                  <input type="text" id="add-school" placeholder="例: 星見第二中学校" list="school-datalist" onkeydown="handleAddKeydown(event)"
+                         class="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500" />
+                  <datalist id="school-datalist"></datalist>
+                </div>
+                <div class="col-span-2 sm:col-span-2">
+                  <button onclick="addSingleEntry()"
+                          class="w-full py-1.5 h-[30px] bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg shadow-sm transition">
+                    ＋ 追加
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-3.5 flex-1 flex flex-col overflow-hidden min-h-[320px]">
+              <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5 shrink-0">
+                <div class="flex items-center gap-2">
+                  <h2 class="text-sm font-bold text-slate-800">登録済み出場ペア</h2>
+                  <span id="reg-table-summary" class="text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">0組 / 0校</span>
+                  <span id="reg-seed-summary" class="text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full hidden">シード 0</span>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <input type="text" id="reg-search-input" oninput="renderRegistrationTable()" placeholder="氏名・学校名で検索..."
+                         class="px-2.5 py-1 text-xs border border-slate-300 rounded-lg w-40 focus:outline-none focus:border-blue-500" />
+                  <select id="reg-school-filter" onchange="renderRegistrationTable()"
+                          class="px-2 py-1 text-xs border border-slate-300 rounded-lg bg-white max-w-[150px]">
+                    <option value="">すべての学校</option>
+                  </select>
+                  <button onclick="clearAllEntries()"
+                          class="px-2.5 py-1 text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg font-bold transition">
+                    全消去
+                  </button>
+                </div>
+              </div>
+
+              <div id="reg-school-chips" class="flex flex-wrap gap-1 mb-2 shrink-0"></div>
+
+              <div class="flex-1 overflow-auto border border-slate-200 rounded-lg">
+                <table class="w-full text-left border-collapse text-xs">
+                  <thead class="bg-slate-50 text-slate-600 sticky top-0 z-10 border-b border-slate-200">
+                    <tr>
+                      <th class="py-2 px-2.5 w-12 text-center">#</th>
+                      <th class="py-2 px-2.5 w-20 text-center">校内番手</th>
+                      <th class="py-2 px-2.5">ペア名（生徒A・生徒B）</th>
+                      <th class="py-2 px-2.5">学校名（確認表記）</th>
+                      <th class="py-2 px-2.5 w-28">シード指定</th>
+                      <th class="py-2 px-2.5 w-24 text-center">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="reg-table-body" class="divide-y divide-slate-100"></tbody>
+                </table>
+              </div>
+            </div>
+
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- 画面2：トーナメント作成・運営画面（左一覧 ＋ 中央盤面 ＋ 右控え枠）   -->
+    <!-- =================================================================== -->
+    <div id="view-tournament" class="hidden flex-1 flex overflow-hidden relative">
+
+      <!-- 左サイドバー：出場者リスト（縦フル活用・スリム幅） -->
+      <aside id="tourney-sidebar" class="no-print w-60 bg-white border-r border-slate-200 flex flex-col shrink-0 z-20">
+        <div class="p-2.5 bg-slate-50 border-b border-slate-200 space-y-1.5 shrink-0">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+              <span class="w-1.5 h-3.5 bg-blue-600 rounded-full"></span>
+              出場者リスト
+            </span>
+            <div class="flex items-center gap-1.5">
+              <span id="sidebar-stats-badge" class="text-[10px] font-bold bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">0組</span>
+              <button onclick="toggleSidebar()" class="text-slate-400 hover:text-slate-700 p-0.5 rounded" title="一覧を閉じる">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <select id="sidebar-school-select" onchange="renderTourneySidebar()"
+                  class="w-full px-2 py-1 text-xs border border-slate-300 rounded-md bg-white font-semibold">
+            <option value="">すべての学校</option>
+          </select>
+
+          <input type="text" id="sidebar-filter-input" oninput="renderTourneySidebar()" placeholder="名前・略称・番号で検索..."
+                 class="w-full px-2.5 py-1 text-xs border border-slate-300 rounded-md focus:outline-none focus:border-blue-500" />
+        </div>
+
+        <div id="sidebar-roster-list" class="flex-1 overflow-y-auto p-2 space-y-1 text-xs"></div>
+      </aside>
+
+      <!-- 中央メイン領域：2段整理ツールバー ＋ 通知ドロワー ＋ 盤面キャンバス -->
+      <main class="flex-1 flex flex-col overflow-hidden bg-slate-200/75 relative min-w-0">
+
+        <!-- ツールバー1段目：パネル開閉・モード切替・編集アクション・通知 -->
+        <div class="no-print bg-white border-b border-slate-200 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 shrink-0 z-20">
+          <!-- 左グループ：一覧開閉・モード切替・Undo/Redo -->
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <button id="btn-sidebar-open" onclick="toggleSidebar()"
+                    class="px-2 py-1 text-xs font-bold bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-md transition flex items-center gap-1"
+                    title="左の出場者一覧を開閉">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+              <span>一覧</span>
+            </button>
+
+            <div class="h-4 w-px bg-slate-200 mx-0.5 hidden sm:block"></div>
+
+            <!-- 3モード切替（枠入替 / 塗りつぶし / 勝敗記録） -->
+            <div class="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+              <button id="btn-mode-edit" onclick="setAppMode('edit')" class="px-2.5 py-1 text-xs rounded-md font-bold bg-blue-600 text-white shadow-sm transition">
+                枠入替
+              </button>
+              <button id="btn-mode-paint" onclick="setAppMode('paint')" class="px-2.5 py-1 text-xs rounded-md font-bold text-slate-600 hover:text-slate-900 transition">
+                塗りつぶし
+              </button>
+              <button id="btn-mode-match" onclick="setAppMode('match')" class="px-2.5 py-1 text-xs rounded-md font-bold text-slate-600 hover:text-slate-900 transition">
+                勝敗記録
+              </button>
+            </div>
+
+            <div class="flex items-center bg-slate-100 rounded-md border border-slate-200 p-0.5">
+              <button id="btn-undo" onclick="undo()" disabled class="px-2 py-0.5 text-xs font-bold rounded text-slate-700 hover:bg-white disabled:opacity-35 disabled:pointer-events-none transition" title="元に戻す (Ctrl+Z)">↩</button>
+              <button id="btn-redo" onclick="redo()" disabled class="px-2 py-0.5 text-xs font-bold rounded text-slate-700 hover:bg-white disabled:opacity-35 disabled:pointer-events-none transition" title="やり直す (Ctrl+Y)">↪</button>
+            </div>
+          </div>
+
+          <!-- 右グループ：再生成・通知バッジ・控え枠開閉 -->
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <!-- 再生成 ＆ ルールポップオーバー -->
+            <div class="relative flex items-center">
+              <button onclick="regenerateCurrentBracket(true)"
+                      class="px-2.5 py-1 text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-l-md shadow-sm transition flex items-center gap-1"
+                      title="学校優先順位をランダム抽選して優先順位ルールで再生成">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                <span>学校順再生成</span>
+              </button>
+              <button onclick="toggleRulesPopover()"
+                      class="px-2 py-1 text-xs bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-r-md border-l border-emerald-500/60 shadow-sm transition"
+                      title="配置ルールの確認・学校優先順のまま再生成">
+                ⚙
+              </button>
+
+              <div id="rules-popover" class="hidden absolute right-0 top-full mt-1.5 w-80 bg-white rounded-xl shadow-xl border border-slate-200 p-3.5 z-40 space-y-2.5">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+                  <span class="text-xs font-bold text-slate-800">優先順位配置ルール設定</span>
+                  <button onclick="toggleRulesPopover()" class="text-slate-400 hover:text-slate-700 text-xs font-bold">✕</button>
+                </div>
+                <div id="popover-rules-checkboxes" class="space-y-1.5 max-h-72 overflow-y-auto pr-0.5"></div>
+                <div class="flex gap-1.5 pt-1">
+                  <button onclick="regenerateCurrentBracket(false); toggleRulesPopover();"
+                          class="flex-1 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-bold rounded-lg shadow-sm transition">
+                    現在の学校順で再生成
+                  </button>
+                  <button onclick="regenerateCurrentBracket(true); toggleRulesPopover();"
+                          class="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold rounded-lg shadow-sm transition">
+                    学校順抽選で再生成
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 3種通知ステータスバッジ -->
+            <button id="btn-conflict-badge" onclick="toggleConflictDrawer()"
+                    class="px-2.5 py-1 text-xs rounded-md font-bold inline-flex items-center gap-1.5 border transition">
+            </button>
+
+            <button id="btn-bench-toggle" onclick="toggleBenchSidebar()"
+                    class="px-2 py-1 text-xs font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-md transition flex items-center gap-1"
+                    title="右側の控え枠パネルを開閉">
+              <span>控え枠</span>
+              <span id="bench-used-pill" class="hidden bg-amber-600 text-white text-[10px] px-1 rounded-full">0</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- ツールバー2段目：表示切替トグル・レイアウト・盤面検索・ズーム -->
+        <div class="no-print bg-slate-50 border-b border-slate-200 px-3 py-1 flex flex-wrap items-center justify-between gap-2 shrink-0 z-10 text-xs">
+          <!-- 左：表示切替トグル群 -->
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider hidden md:inline">表示:</span>
+
+            <!-- 確認用表記（略称＋番手）トグル -->
+            <button id="btn-toggle-rank-badge" onclick="toggleRankBadgeDisplay()"
+                    class="px-2 py-0.5 text-[11px] font-bold bg-teal-600 hover:bg-teal-500 text-white border border-teal-600 rounded-md transition flex items-center gap-1"
+                    title="確認用表記（学校略称＋番手）の表示／非表示を切り替え">
+              <span>確認表記</span>
+              <span id="rank-badge-toggle-state" class="text-[10px] px-1 rounded bg-teal-800/70 text-teal-100">ON</span>
+            </button>
+
+            <!-- 優先順位・シード（S1等）表示切替トグル -->
+            <button id="btn-toggle-priority" onclick="toggleSlotPriorityDisplay()"
+                    class="px-2 py-0.5 text-[11px] font-bold bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-md transition flex items-center gap-1"
+                    title="枠優先順位（1〜最下位）およびシード表記（S1等）の表示／非表示を切り替え">
+              <span>優先・シード</span>
+              <span id="priority-toggle-state" class="text-[10px] px-1 rounded bg-slate-200 text-slate-600">OFF</span>
+            </button>
+
+            <div class="h-3.5 w-px bg-slate-300 mx-0.5"></div>
+
+            <!-- 進行レイアウト切替 -->
+            <div class="flex bg-slate-200/80 p-0.5 rounded-md text-[11px]">
+              <button id="btn-layout-dual" onclick="setLayoutMode('dual')" class="px-2 py-0.2 rounded font-bold bg-white text-slate-900 shadow-sm">左右中央</button>
+              <button id="btn-layout-single" onclick="setLayoutMode('single')" class="px-2 py-0.2 rounded font-bold text-slate-600">片側縦型</button>
+            </div>
+          </div>
+
+          <!-- 右：盤面検索 ＆ ズーム -->
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <div class="flex items-center bg-white border border-slate-300 rounded-md px-2 py-0.5">
+              <svg class="w-3.5 h-3.5 text-slate-400 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+              <input type="text" id="board-search-input" oninput="handleBoardSearch(this.value)" onkeydown="handleBoardSearchKey(event)"
+                     placeholder="盤面検索..." class="bg-transparent text-xs w-24 sm:w-28 focus:outline-none" />
+              <span id="board-search-count" class="text-[10px] text-slate-500 font-bold mx-1"></span>
+              <button onclick="stepBoardSearch(-1)" class="px-0.5 text-slate-500 hover:text-slate-900 text-[11px]">▲</button>
+              <button onclick="stepBoardSearch(1)" class="px-0.5 text-slate-500 hover:text-slate-900 text-[11px]">▼</button>
+            </div>
+
+            <div class="flex items-center gap-0.5 bg-white border border-slate-300 rounded-md px-1 py-0.5">
+              <button onclick="changeZoom(-0.1)" class="px-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 rounded">－</button>
+              <span id="zoom-label" class="text-[11px] font-bold w-9 text-center text-slate-700">100%</span>
+              <button onclick="changeZoom(0.1)" class="px-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 rounded">＋</button>
+              <button onclick="resetZoom100()" class="px-1.5 py-0.2 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded text-slate-700 ml-0.5">100%</button>
+              <button onclick="fitZoomToScreen()" class="px-1.5 py-0.2 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded text-slate-700">全体</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 塗りつぶしモード カラーパレットバー -->
+        <div id="paint-mode-bar" class="no-print hidden bg-amber-50 border-b border-amber-200 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span class="font-bold text-amber-950 mr-1">塗り色:</span>
+            <div id="paint-palette-buttons" class="flex items-center gap-1"></div>
+            <span class="text-[11px] text-amber-800/80 ml-1 hidden lg:inline">※枠クリックで塗りつぶし（同色再クリックで解除）</span>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <label class="inline-flex items-center gap-1.5 px-2 py-0.5 bg-white border border-amber-300 rounded-md cursor-pointer font-bold text-[11px] text-slate-700" title="印刷・PDF出力時に塗りつぶしを表示するか切り替え">
+              <input type="checkbox" id="chk-print-fills" checked onchange="togglePrintFills(this.checked)" class="rounded text-amber-600" />
+              <span>印刷時にも表示</span>
+            </label>
+            <button onclick="clearAllSlotFills()" class="px-2 py-0.5 text-[11px] bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md font-bold transition">
+              全解除
+            </button>
+            <button onclick="setAppMode('edit')" class="text-[11px] font-bold text-blue-700 hover:underline ml-1">
+              枠入替に戻る
+            </button>
+          </div>
+        </div>
+
+        <!-- スコア記録モード案内バー -->
+        <div id="match-mode-bar" class="no-print hidden bg-rose-50 border-b border-rose-200 px-3 py-1.5 flex items-center justify-between text-xs text-rose-900 shrink-0">
+          <span class="font-semibold">
+            勝敗記録モード（<b id="match-mode-format-label">7ゲームマッチ</b>）：各試合の交点にある <b class="bg-rose-600 text-white px-1.5 py-0.2 rounded-full text-[10px]">✎</b> ボタンからゲーム数を入力してください。
+          </span>
+          <button onclick="setAppMode('edit')" class="text-[11px] font-bold text-rose-700 hover:underline">枠入替に戻る</button>
+        </div>
+
+        <!-- 通知・ルールチェック詳細ドロワー -->
+        <div id="conflict-drawer" class="no-print hidden bg-white border-b border-slate-300 px-4 py-2.5 text-xs shadow-sm shrink-0 max-h-60 overflow-y-auto">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-3 flex-wrap">
+              <span class="font-bold text-slate-800">配置チェック通知（クリックで該当枠へジャンプ）</span>
+              <div class="flex items-center gap-2 text-[10px] text-slate-500">
+                <span class="inline-flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-rose-200 border border-rose-500"></span>1回戦同校</span>
+                <span class="inline-flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-purple-200 border border-purple-600"></span>同一カード3戦+</span>
+                <span class="inline-flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-orange-200 border border-orange-600"></span>上位4番手ルール外</span>
+              </div>
+            </div>
+            <button onclick="toggleConflictDrawer()" class="text-slate-500 hover:text-slate-900 font-bold shrink-0">✕ 閉じる</button>
+          </div>
+          <div id="conflict-list-items" class="space-y-2"></div>
+        </div>
+
+        <!-- トーナメント描画キャンバス -->
+        <div id="canvas-viewport" class="flex-1 overflow-auto p-4 sm:p-5">
+          <div id="sheet-wrapper" class="inline-block min-w-full">
+            <div id="tournament-sheet" class="sheet-paper mx-auto p-5 sm:p-6 rounded-md">
+              <!-- JS描画 -->
+            </div>
+          </div>
+        </div>
+
+      </main>
+
+      <!-- 右サイドパネル：控え枠（画面いっぱい・追加可能） -->
+      <aside id="bench-sidebar" class="no-print w-52 bg-amber-50/70 border-l border-amber-200 flex flex-col shrink-0 z-20">
+        <div class="p-2.5 bg-amber-100/80 border-b border-amber-200 shrink-0">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+              <span class="w-1.5 h-3.5 bg-amber-600 rounded-full"></span>
+              <span>控え枠</span>
+              <span id="bench-total-label" class="text-[10px] font-semibold text-amber-800 bg-amber-200/70 px-1.5 py-0.2 rounded">16枠</span>
+            </span>
+            <button onclick="toggleBenchSidebar()" class="text-amber-700 hover:text-amber-950 p-0.5 rounded" title="控え枠を閉じる">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"/></svg>
+            </button>
+          </div>
+          <p class="text-[10px] text-amber-900/80 mt-1 leading-snug">
+            ドラッグまたは2回クリックで一時退避・三角入替（Esc解除）
+          </p>
+        </div>
+
+        <div id="bench-slots-container" class="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5"></div>
+
+        <div class="p-2 bg-amber-100/60 border-t border-amber-200 shrink-0">
+          <button onclick="addBenchSlots(4)"
+                  class="w-full py-1 text-[11px] font-bold bg-white hover:bg-amber-50 text-amber-900 border border-amber-300 rounded-md transition">
+            ＋ 控え枠を4枠追加
+          </button>
+        </div>
+      </aside>
+
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- 画面3：進行表・コート運営（OOP / リアルタイム進行ボード）            -->
+    <!-- =================================================================== -->
+    <div id="view-oop" class="hidden flex-1 flex flex-col overflow-hidden bg-slate-100">
+      <!-- 上段ツールバー -->
+      <div class="no-print bg-white border-b border-slate-200 px-3 sm:px-4 py-2 shrink-0 space-y-2">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="flex items-center gap-1.5 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+              <label class="text-[11px] font-bold text-slate-500">会場</label>
+              <input type="text" id="oop-venue-input" value="第1会場" oninput="updateOopVenue(this.value)"
+                     class="w-28 text-xs font-bold text-slate-800 bg-transparent focus:outline-none border-b border-transparent focus:border-blue-500" />
+            </div>
+
+            <div class="flex items-center gap-1.5 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+              <label class="text-[11px] font-bold text-slate-500">コート数</label>
+              <select id="oop-court-count-select" onchange="changeOopCourtCount(this.value)"
+                      class="text-xs font-bold text-slate-800 bg-white border border-slate-300 rounded px-1.5 py-0.5">
+                <option value="2">2面</option>
+                <option value="3">3面</option>
+                <option value="4" selected>4面</option>
+                <option value="5">5面</option>
+                <option value="6">6面</option>
+                <option value="8">8面</option>
+                <option value="10">10面</option>
+                <option value="12">12面</option>
+                <option value="16">16面</option>
+              </select>
+            </div>
+
+            <div class="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
+              <button id="btn-oop-mode-block" onclick="setOopAssignMode('block')"
+                      class="px-2 py-1 text-[11px] font-bold rounded-md bg-white text-slate-900 shadow-sm transition"
+                      title="A〜D山ごとに担当コートを振り分けます">山・ブロック順</button>
+              <button id="btn-oop-mode-round" onclick="setOopAssignMode('round')"
+                      class="px-2 py-1 text-[11px] font-bold rounded-md text-slate-600 hover:text-slate-900 transition"
+                      title="1回戦から順に全コートへ均等配分します">ラウンド順</button>
+            </div>
+
+            <button onclick="regenerateOopSchedule(true)"
+                    class="px-2.5 py-1 text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white rounded-lg shadow-sm transition"
+                    title="試合中・終了済みの試合は維持したまま、待機試合を再配分します">
+              進行表を再配分
+            </button>
+
+            <button id="btn-oop-umpire-toggle" onclick="toggleOopUmpireRule()"
+                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 transition"
+                    title="前試合の敗者審判ルールを自動表示">
+              敗者審判: ON
+            </button>
+
+            <button id="btn-oop-hide-finished" onclick="toggleOopHideFinished()"
+                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 transition"
+                    title="終了済み試合をたたんで、試合中・次試合を左端に詰めて表示">
+              終了済をたたむ: OFF
+            </button>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-1.5">
+            <div class="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
+              <button id="btn-oop-view-board" onclick="setOopViewStyle('board')"
+                      class="px-2.5 py-1 text-[11px] font-bold rounded-md bg-slate-900 text-white shadow-sm transition">全コート進行一覧</button>
+              <button id="btn-oop-view-table" onclick="setOopViewStyle('table')"
+                      class="px-2.5 py-1 text-[11px] font-bold rounded-md text-slate-600 hover:text-slate-900 transition">印刷用マトリクス</button>
+            </div>
+
+            <div class="h-4 w-px bg-slate-200 mx-0.5"></div>
+
+            <button onclick="printOopSheet()"
+                    class="px-2.5 py-1 text-[11px] font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-md transition">
+              進行表印刷
+            </button>
+            <button onclick="exportOopPdf()"
+                    class="px-2.5 py-1 text-[11px] font-bold bg-rose-600 hover:bg-rose-500 text-white rounded-md transition">
+              PDF保存
+            </button>
+            <button onclick="exportOopExcel()"
+                    class="px-2.5 py-1 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition">
+              Excel保存
+            </button>
+          </div>
+        </div>
+
+        <!-- リアルタイム進捗サマリーバー -->
+        <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1 border-t border-slate-100">
+          <div id="oop-stats-bar" class="flex flex-wrap items-center gap-2"></div>
+          <div class="flex items-center gap-2 text-slate-500">
+            <span id="oop-move-hint" class="hidden sm:inline">カードをドラッグまたは「移動」で、任意の試合と試合の間に挿入できます</span>
+            <button id="btn-oop-toggle-queue" onclick="toggleOopQueueDrawer()"
+                    class="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded font-bold flex items-center gap-1">
+              <span>未割当</span>
+              <span id="oop-unassigned-count" class="px-1.5 rounded-full bg-slate-300 text-slate-800 text-[10px]">0</span>
+            </button>
+            <button id="btn-oop-cancel-move" onclick="cancelOopMoveSelection()"
+                    class="hidden px-2 py-0.5 bg-blue-600 text-white border border-blue-700 rounded font-bold shadow-sm">
+              移動選択を解除 (Esc)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 全コート横タイムライン進行ボード作業領域 -->
+      <div id="oop-board-workspace" class="flex-1 flex overflow-hidden">
+        <div id="oop-courts-grid" class="flex-1 overflow-auto p-2.5 sm:p-3 bg-slate-100">
+          <!-- JS描画: 全コート横並びタイムライン一覧 -->
+        </div>
+
+        <!-- 右サイド：未割当・待機キュー（未割当がある時またはトグル時に展開） -->
+        <aside id="oop-queue-sidebar" class="no-print hidden w-60 bg-white border-l border-slate-200 flex flex-col shrink-0 overflow-hidden">
+          <div class="p-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+            <span class="text-xs font-bold text-slate-800">未割当・待機キュー</span>
+            <button onclick="toggleOopQueueDrawer()" class="text-slate-400 hover:text-slate-700 text-xs font-bold px-1">✕</button>
+          </div>
+          <div id="oop-unassigned-list" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
+          <div class="p-2.5 bg-slate-50 border-t border-slate-200 space-y-1.5">
+            <button onclick="autoAssignUnassignedMatches()"
+                    class="w-full py-1.5 text-[11px] font-bold bg-blue-600 hover:bg-blue-500 text-white rounded-md transition">
+              未割当を空きコートへ自動投入
+            </button>
+            <button onclick="regenerateOopSchedule(false)"
+                    class="w-full py-1 text-[10px] font-bold bg-white hover:bg-slate-100 text-slate-600 border border-slate-300 rounded-md transition">
+              全試合を初期ルールでリセット配分
+            </button>
+          </div>
+        </aside>
+      </div>
+
+      <!-- 進行表一覧・印刷レイアウト -->
+      <div id="oop-table-workspace" class="hidden flex-1 overflow-auto p-4 sm:p-6 bg-slate-200/70">
+        <div id="oop-print-sheet" class="bg-white shadow-lg border border-slate-200 rounded-md max-w-[1280px] mx-auto p-5 sm:p-6">
+          <!-- JS描画: 印刷対応コート別進行表 -->
+        </div>
+      </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- 画面4：生徒・保護者向け 公開ビュー（スマホ最適化3タブ）               -->
+    <!-- =================================================================== -->
+    <div id="view-spectator" class="hidden flex-1 flex flex-col overflow-hidden bg-slate-900">
+      <!-- プレビュー操作バー（管理者確認用） -->
+      <div class="no-print bg-slate-800 border-b border-slate-700 px-3 sm:px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-200 shrink-0">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 font-bold text-[11px]">生徒・保護者 公開ビュー（プレビュー）</span>
+          <div class="flex items-center bg-slate-900 p-0.5 rounded-md border border-slate-700">
+            <button id="btn-spec-frame-mobile" onclick="setSpectatorFrameMode('mobile')"
+                    class="px-2 py-0.5 text-[11px] font-bold rounded bg-blue-600 text-white">スマホ幅 (390px)</button>
+            <button id="btn-spec-frame-full" onclick="setSpectatorFrameMode('full')"
+                    class="px-2 py-0.5 text-[11px] font-bold rounded text-slate-300 hover:text-white">全画面表示</button>
+          </div>
+          <span id="spectator-privacy-summary" class="text-[11px] text-slate-400 hidden sm:inline"></span>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button onclick="openPublishModal()"
+                  class="px-2.5 py-1 text-[11px] font-bold bg-slate-700 hover:bg-slate-600 text-white rounded-md border border-slate-600 transition">
+            公開設定・QR・パスコード
+          </button>
+          <button onclick="switchMainView('oop')"
+                  class="px-2.5 py-1 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition">
+            運営画面へ戻る
+          </button>
+        </div>
+      </div>
+
+      <!-- ポータル本体コンテナ -->
+      <div class="flex-1 overflow-auto p-2 sm:p-5 flex justify-center items-start bg-slate-900/95">
+        <div id="spectator-portal-frame" class="w-full max-w-[400px] min-h-[720px] bg-slate-50 text-slate-900 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden flex flex-col">
+          <!-- JS描画: 生徒・保護者向け3タブポータル -->
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 公開設定・QRコード・スタッフPINモーダル -->
+  <div id="publish-modal" class="no-print hidden fixed inset-0 bg-slate-900/60 backdrop-blur-[1px] z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-2xl w-full max-h-[90vh] overflow-y-auto p-5 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div>
+          <h3 class="text-sm font-bold text-slate-900">公開設定・QRコード・会場スタッフPIN</h3>
+          <p class="text-[11px] text-slate-500">生徒・保護者向け画面の公開ルールと、別会場スタッフ用PINを管理します</p>
+        </div>
+        <button onclick="closePublishModal()" class="text-slate-400 hover:text-slate-700 font-bold px-2 py-1">✕</button>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- 左：公開設定・個人情報 -->
+        <div class="space-y-3">
+          <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-3">
+            <div>
+              <div class="text-xs font-bold text-slate-800">生徒・保護者向け公開</div>
+              <div class="text-[10px] text-slate-500">大会終了後はOFFで即時非公開にできます</div>
+            </div>
+            <label class="inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="pub-enabled-checkbox" onchange="updatePublishSettingsFromModal()" class="w-4 h-4 accent-emerald-600" />
+              <span id="pub-enabled-text" class="ml-1.5 text-xs font-bold text-emerald-700">公開中</span>
+            </label>
+          </div>
+
+          <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+            <label class="block text-xs font-bold text-slate-800">閲覧パスコード（任意・合言葉）</label>
+            <input type="text" id="pub-passcode-input" placeholder="空欄ならパスコードなしで閲覧可能"
+                   oninput="updatePublishSettingsFromModal()"
+                   class="w-full px-2.5 py-1.5 text-xs font-bold border border-slate-300 rounded-lg bg-white focus:outline-none focus:border-blue-500" />
+            <p class="text-[10px] text-slate-500">設定すると閲覧時にパスコード入力が必要になります（検索エンジン非掲載 noindex 対応済）</p>
+          </div>
+
+          <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+            <div class="text-xs font-bold text-slate-800">選手名の表示形式（個人情報配慮）</div>
+            <div class="grid grid-cols-2 gap-2">
+              <label class="flex items-center gap-1.5 p-2 rounded-lg border border-slate-200 bg-white cursor-pointer text-xs font-bold">
+                <input type="radio" name="pub-name-mode" value="full" onchange="updatePublishSettingsFromModal()" class="accent-blue-600" />
+                <span>フルネーム</span>
+              </label>
+              <label class="flex items-center gap-1.5 p-2 rounded-lg border border-slate-200 bg-white cursor-pointer text-xs font-bold">
+                <input type="radio" name="pub-name-mode" value="surname" onchange="updatePublishSettingsFromModal()" class="accent-blue-600" />
+                <span>名字のみ</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 種目別 会場スタッフPIN -->
+          <div class="p-3 rounded-xl bg-amber-50/70 border border-amber-200 space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-amber-950">会場運営スタッフ用 PIN（種目別）</span>
+              <span class="text-[10px] text-amber-800 bg-amber-200/70 px-1.5 py-0.5 rounded font-bold">フェーズ2同期対応</span>
+            </div>
+            <div id="pub-staff-pins-list" class="space-y-1.5 max-h-36 overflow-y-auto"></div>
+          </div>
+        </div>
+
+        <!-- 右：QRコード ＆ URL -->
+        <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col items-center justify-between text-center space-y-3">
+          <div class="space-y-1">
+            <div class="text-xs font-bold text-slate-800">生徒・保護者用 大会ポータル QRコード</div>
+            <div class="text-[10px] text-slate-500">1つのQRから全種目のコート状況・トーナメント表を確認可能</div>
+          </div>
+          <div id="pub-qr-box" class="bg-white p-3 rounded-xl border border-slate-200 shadow-sm flex items-center justify-center min-w-[168px] min-h-[168px]"></div>
+          <div class="w-full space-y-1.5">
+            <input type="text" id="pub-portal-url-input" readonly
+                   class="w-full px-2.5 py-1.5 text-[11px] font-mono bg-white border border-slate-300 rounded-lg text-slate-700" />
+            <div class="grid grid-cols-2 gap-2">
+              <button onclick="copyPortalUrl()"
+                      class="py-1.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition">
+                URLをコピー
+              </button>
+              <button onclick="closePublishModal(); switchMainView('spectator');"
+                      class="py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition">
+                公開ビューを開く
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 種目追加・設定モーダル -->
+  <div id="event-modal" class="no-print hidden fixed inset-0 bg-slate-900/50 backdrop-blur-[1px] z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-5 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+        <h3 id="event-modal-title" class="text-sm font-bold text-slate-800">種目の追加</h3>
+        <button onclick="closeEventModal()" class="text-slate-400 hover:text-slate-700 font-bold">✕</button>
+      </div>
+      <div class="space-y-3">
+        <div>
+          <label class="block text-[11px] font-bold text-slate-600 mb-1">種目名（例：男子個人、女子個人、A級）</label>
+          <input type="text" id="event-modal-name" class="w-full px-3 py-1.5 text-xs font-bold border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500" />
+        </div>
+        <div>
+          <label class="block text-[11px] font-bold text-slate-600 mb-1">会場名（例：第1会場 市民コート）</label>
+          <input type="text" id="event-modal-venue" class="w-full px-3 py-1.5 text-xs font-bold border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500" />
+        </div>
+        <div id="event-modal-court-row">
+          <label class="block text-[11px] font-bold text-slate-600 mb-1">使用コート数</label>
+          <select id="event-modal-courts" class="w-full px-3 py-1.5 text-xs font-bold border border-slate-300 rounded-lg bg-white">
+            <option value="2">2面</option>
+            <option value="4" selected>4面</option>
+            <option value="6">6面</option>
+            <option value="8">8面</option>
+            <option value="12">12面</option>
+            <option value="16">16面</option>
+          </select>
+        </div>
+      </div>
+      <div class="flex items-center justify-between pt-2 border-t border-slate-100">
+        <div id="event-modal-extra-actions" class="flex gap-1.5">
+          <button onclick="duplicateActiveEvent()" class="px-2.5 py-1.5 text-[11px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg">複製</button>
+          <button onclick="deleteActiveEvent()" class="px-2.5 py-1.5 text-[11px] font-bold bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg">削除</button>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="closeEventModal()" class="px-3 py-1.5 text-xs border border-slate-300 rounded-lg text-slate-600 font-bold">キャンセル</button>
+          <button onclick="submitEventModal()" class="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg shadow">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 審判メモ編集モーダル -->
+  <div id="umpire-modal" class="no-print hidden fixed inset-0 bg-slate-900/50 backdrop-blur-[1px] z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-sm w-full p-5 space-y-3">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+        <h3 class="text-sm font-bold text-slate-800">審判割当メモの編集</h3>
+        <button onclick="closeUmpireModal()" class="text-slate-400 hover:text-slate-700 font-bold">✕</button>
+      </div>
+      <div id="umpire-modal-match-label" class="text-xs font-bold text-slate-600 bg-slate-50 px-2.5 py-1.5 rounded border border-slate-200"></div>
+      <div>
+        <label class="block text-[11px] font-bold text-slate-600 mb-1">審判メモ（空欄にすると自動ルールに戻ります）</label>
+        <input type="text" id="umpire-modal-input" placeholder="例：星見二 佐藤・鈴木 ／ 本部審判"
+               class="w-full px-3 py-1.5 text-xs font-bold border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500" />
+      </div>
+      <div class="flex items-center justify-between pt-2 border-t border-slate-100">
+        <button onclick="clearUmpireOverride()" class="px-2.5 py-1.5 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg">自動に戻す</button>
+        <div class="flex gap-2">
+          <button onclick="closeUmpireModal()" class="px-3 py-1.5 text-xs border border-slate-300 rounded-lg text-slate-600 font-bold">キャンセル</button>
+          <button onclick="saveUmpireOverride()" class="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- スコア・勝敗入力モーダル -->
+  <div id="score-modal" class="no-print hidden fixed inset-0 bg-slate-900/50 backdrop-blur-[1px] z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-5 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+        <h3 class="text-sm font-bold text-slate-800" id="score-modal-title">試合結果・ゲームカウント入力</h3>
+        <button onclick="closeScoreModal()" class="text-slate-400 hover:text-slate-700 font-bold">✕</button>
+      </div>
+
+      <div class="space-y-3">
+        <div class="p-3 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
+          <div class="min-w-0 flex-1">
+            <div class="text-[10px] text-slate-400 font-bold">上側 / 左側ペア</div>
+            <div id="score-p1-name" class="text-xs font-bold text-slate-900 truncate">-</div>
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <label class="text-[11px] font-bold text-slate-600">G:</label>
+            <select id="score-p1-games" class="px-2 py-1 text-sm font-bold border border-slate-300 rounded-md bg-white"></select>
+            <button id="btn-quick-win-1" onclick="setQuickWinner(1)" class="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-md">勝(4)</button>
+          </div>
+        </div>
+
+        <div class="p-3 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
+          <div class="min-w-0 flex-1">
+            <div class="text-[10px] text-slate-400 font-bold">下側 / 右側ペア</div>
+            <div id="score-p2-name" class="text-xs font-bold text-slate-900 truncate">-</div>
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <label class="text-[11px] font-bold text-slate-600">G:</label>
+            <select id="score-p2-games" class="px-2 py-1 text-sm font-bold border border-slate-300 rounded-md bg-white"></select>
+            <button id="btn-quick-win-2" onclick="setQuickWinner(2)" class="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-md">勝(4)</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between pt-2 border-t border-slate-100">
+        <button onclick="clearMatchScore()" class="px-3 py-1.5 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg">結果クリア</button>
+        <div class="flex gap-2">
+          <button onclick="closeScoreModal()" class="px-3 py-1.5 text-xs border border-slate-300 rounded-lg text-slate-600 font-bold">キャンセル</button>
+          <button onclick="saveMatchScore()" class="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg shadow">確定して反映</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- トースト通知 -->
+  <div id="toast-container" class="no-print fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+
+  <script src="./bracket-engine.js"></script>
+  <script src="./oop-engine.js"></script>
+  <script src="./app.js"></script>
+  <script src="./operations.js"></script>
+</body>
+</html>

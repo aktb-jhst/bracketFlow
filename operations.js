@@ -1,0 +1,2376 @@
+/* global state, BracketEngine, OopEngine, XLSX, html2canvas, jspdf, qrcode */
+/* global saveToLocalStorage, renderSheet, renderBench, renderTourneySidebar, renderSchoolAliasEditor, renderRegistrationTable, renderRuleCheckboxes, refreshAlerts, updateRegCountPill, updateUndoRedoButtons, populateScoreGameSelects, setLayoutMode, togglePrintFills, formatSchoolShortName, formatPairLabel, escapeHtml, escapeJs, showToast, openScoreModal, switchMainView, pushHistory, generateTournamentFromEntries, normalizeBench, createEmptyBench */
+'use strict';
+
+/**
+ * BracketFlow — Phase 1 Operations Module
+ * 1. 親「大会」＞ 複数「種目（会場別）」マルチイベント管理（JSON完全互換）
+ * 2. 進行表・コート運営（ハイブリッドOOP・ドラッグ移動・敗者審判・順位決定戦統合・印刷/PDF/Excel）
+ * 3. 生徒・保護者向け 公開ビュー（スマホ最適化3タブ・個人情報制御・QRコード・スタッフPIN）
+ */
+(function () {
+  const BUNDLE_STORAGE_KEY = 'bracketflow_tournament_bundle_v1';
+  const SPECTATOR_FAVS_KEY = 'bracketflow_spectator_favs_v1';
+
+  const opsUi = {
+    bundle: null,
+    suppressBundleSync: false,
+    oopSelectedMoveKey: null,
+    oopDragKey: null,
+    oopOpenWoKey: null,
+    oopHideFinished: false,   // 終了済みをたたんで現在・次試合を左へ寄せる
+    oopQueueDrawerOpen: false,
+    oopFinishedCollapsed: {}, // { [courtKey]: boolean }
+    umpireModalMatchKey: null,
+    eventModalMode: 'add',    // 'add' | 'edit'
+    spectator: {
+      frameMode: 'mobile',    // 'mobile' | 'full'
+      tab: 'courts',          // 'courts' | 'bracket' | 'search'
+      eventId: null,
+      searchQuery: '',
+      schoolFilter: 'ALL',
+      bracketZoom: 0.72,
+      unlockedPasscode: '',
+      organizerBypassClosed: false,
+      favorites: new Set()
+    }
+  };
+
+  function randomId(prefix) {
+    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  function generateStaffPin() {
+    return String(Math.floor(1000 + Math.random() * 9000));
+  }
+
+  function cloneDeep(obj) {
+    return JSON.parse(JSON.stringify(obj));
+  }
+
+  function captureActiveStateSnapshot() {
+    return {
+      version: '5.1',
+      title: state.title,
+      matchFormat: state.matchFormat,
+      entries: cloneDeep(state.entries || []),
+      schoolOrder: cloneDeep(state.schoolOrder || []),
+      schoolAliases: cloneDeep(state.schoolAliases || {}),
+      rules: cloneDeep(state.rules || BracketEngine.DEFAULT_RULES),
+      bracketSize: state.bracketSize || 16,
+      slots: cloneDeep(state.slots || []),
+      activeSlotMask: cloneDeep(state.activeSlotMask || []),
+      bench: cloneDeep(state.bench || createEmptyBench()),
+      slotFills: cloneDeep(state.slotFills || {}),
+      printShowFills: Boolean(state.printShowFills),
+      results: cloneDeep(state.results || {}),
+      consolation: cloneDeep(state.consolation || {
+        preset: 'none',
+        title: '順位決定戦（代表決定戦）',
+        matchCount: 2,
+        slots: ['', '', '', '', '', '', '', ''],
+        results: {}
+      }),
+      oop: OopEngine.createDefaultOopState(state.oop),
+      layoutMode: state.layoutMode || 'dual',
+      printMode: state.printMode || 'distribution',
+      printOrientation: state.printOrientation || 'portrait'
+    };
+  }
+
+  function hydrateStateFromSnapshot(snap) {
+    const data = snap || {};
+    state.title = data.title || '大会トーナメント表';
+    state.matchFormat = (data.matchFormat === 5 || data.matchFormat === 7) ? data.matchFormat : 7;
+    state.entries = Array.isArray(data.entries) ? cloneDeep(data.entries) : [];
+    state.schoolOrder = Array.isArray(data.schoolOrder) ? cloneDeep(data.schoolOrder) : [];
+    state.schoolAliases = data.schoolAliases ? cloneDeep(data.schoolAliases) : {};
+    state.rules = Object.assign({}, BracketEngine.DEFAULT_RULES, data.rules || {});
+    state.bracketSize = data.bracketSize || BracketEngine.nextPowerOfTwo(Math.max(4, state.entries.length || 4));
+    state.slots = Array.isArray(data.slots) ? cloneDeep(data.slots) : [];
+    state.activeSlotMask = Array.isArray(data.activeSlotMask) ? cloneDeep(data.activeSlotMask) : state.slots.map((s) => Boolean(s));
+    state.bench = normalizeBench(data.bench);
+    state.slotFills = (data.slotFills && typeof data.slotFills === 'object') ? cloneDeep(data.slotFills) : {};
+    state.printShowFills = (typeof data.printShowFills === 'boolean') ? data.printShowFills : true;
+    state.results = data.results ? cloneDeep(data.results) : {};
+    state.consolation = data.consolation ? cloneDeep(data.consolation) : {
+      preset: 'none',
+      title: '順位決定戦（代表決定戦）',
+      matchCount: 2,
+      slots: ['', '', '', '', '', '', '', ''],
+      results: {}
+    };
+    state.oop = OopEngine.createDefaultOopState(data.oop);
+    state.layoutMode = data.layoutMode || 'dual';
+    state.printMode = data.printMode || 'distribution';
+    state.printOrientation = data.printOrientation || 'portrait';
+    state.history = [];
+    state.future = [];
+    state.selectedTarget = null;
+    state.editingEntryId = null;
+
+    // UI入力要素の同期
+    const titleInput = document.getElementById('tournament-title-input');
+    if (titleInput) titleInput.value = state.title;
+    const fmtSel = document.getElementById('match-format-select');
+    if (fmtSel) fmtSel.value = String(state.matchFormat);
+    const fmtLbl = document.getElementById('match-mode-format-label');
+    if (fmtLbl) fmtLbl.textContent = `${state.matchFormat}ゲームマッチ`;
+    populateScoreGameSelects();
+    togglePrintFills(state.printShowFills, false);
+    setLayoutMode(state.layoutMode);
+    updateUndoRedoButtons();
+    updateRegCountPill();
+    renderRuleCheckboxes();
+    refreshAlerts(false);
+  }
+
+  function createEmptyEventSnapshot(eventName, venueName, courtCount) {
+    return {
+      version: '5.1',
+      title: `${opsUi.bundle ? opsUi.bundle.name + ' ' : ''}${eventName}`,
+      matchFormat: 7,
+      entries: [],
+      schoolOrder: [],
+      schoolAliases: {},
+      rules: Object.assign({}, BracketEngine.DEFAULT_RULES),
+      bracketSize: 16,
+      slots: [],
+      activeSlotMask: [],
+      bench: createEmptyBench(),
+      slotFills: {},
+      printShowFills: true,
+      results: {},
+      consolation: {
+        preset: 'none',
+        title: '順位決定戦（代表決定戦）',
+        matchCount: 2,
+        slots: ['', '', '', '', '', '', '', ''],
+        results: {}
+      },
+      oop: OopEngine.createDefaultOopState({
+        venue: venueName || '第1会場',
+        courtCount: parseInt(courtCount, 10) || 4
+      }),
+      layoutMode: 'dual',
+      printMode: 'distribution',
+      printOrientation: 'portrait'
+    };
+  }
+
+  function getActiveEvent() {
+    if (!opsUi.bundle || !Array.isArray(opsUi.bundle.events) || opsUi.bundle.events.length === 0) return null;
+    return opsUi.bundle.events.find((ev) => ev.id === opsUi.bundle.activeEventId) || opsUi.bundle.events[0];
+  }
+
+  function saveBundleToLocalStorage() {
+    if (!opsUi.bundle) return;
+    try {
+      localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(opsUi.bundle));
+    } catch (_) {
+      // 無視
+    }
+  }
+
+  function loadSpectatorFavorites() {
+    try {
+      const raw = localStorage.getItem(SPECTATOR_FAVS_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      opsUi.spectator.favorites = new Set(Array.isArray(arr) ? arr : []);
+    } catch (_) {
+      opsUi.spectator.favorites = new Set();
+    }
+  }
+
+  function saveSpectatorFavorites() {
+    try {
+      localStorage.setItem(SPECTATOR_FAVS_KEY, JSON.stringify(Array.from(opsUi.spectator.favorites)));
+    } catch (_) {
+      // 無視
+    }
+  }
+
+  function initBundle() {
+    loadSpectatorFavorites();
+    try {
+      const raw = localStorage.getItem(BUNDLE_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.events) && parsed.events.length > 0) {
+          opsUi.bundle = parsed;
+          if (!opsUi.bundle.publish) {
+            opsUi.bundle.publish = { enabled: true, passcode: '', nameDisplayMode: 'full' };
+          }
+          opsUi.bundle.events.forEach((ev, idx) => {
+            if (!ev.staffPin) ev.staffPin = generateStaffPin();
+            if (!ev.venue) ev.venue = (ev.data && ev.data.oop && ev.data.oop.venue) || `第${idx + 1}会場`;
+          });
+          const activeEv = getActiveEvent();
+          if (activeEv && activeEv.data) {
+            opsUi.suppressBundleSync = true;
+            hydrateStateFromSnapshot(activeEv.data);
+            opsUi.suppressBundleSync = false;
+            renderSchoolAliasEditor();
+            renderRegistrationTable();
+          }
+          renderEventSwitcherBar();
+          updateOopHeaderBadge();
+          updatePublishIndicator();
+          return;
+        }
+      }
+    } catch (_) {
+      // フォールバックへ
+    }
+
+    // 初回マイグレーション：現行の単一種目 state を親大会＞第1種目として取り込む
+    const initialSnap = captureActiveStateSnapshot();
+    const evId = randomId('ev');
+    opsUi.bundle = {
+      version: '6.0-bundle',
+      id: randomId('tour'),
+      name: '令和8年度 春季地区大会',
+      publish: {
+        enabled: true,
+        passcode: '',
+        nameDisplayMode: 'full'
+      },
+      activeEventId: evId,
+      events: [
+        {
+          id: evId,
+          name: '男子個人',
+          venue: (initialSnap.oop && initialSnap.oop.venue) || '第1会場',
+          staffPin: generateStaffPin(),
+          data: initialSnap
+        }
+      ]
+    };
+    saveBundleToLocalStorage();
+    renderEventSwitcherBar();
+    updateOopHeaderBadge();
+    updatePublishIndicator();
+  }
+
+  // =========================================================================
+  // 1. 親大会・複数種目（会場別）バー ＆ モーダル
+  // =========================================================================
+  function renderEventSwitcherBar() {
+    if (!opsUi.bundle) return;
+    const parentInput = document.getElementById('parent-tournament-name-input');
+    if (parentInput && document.activeElement !== parentInput) {
+      parentInput.value = opsUi.bundle.name || '大会';
+    }
+    const tabsEl = document.getElementById('event-tabs-container');
+    const activeEv = getActiveEvent();
+    if (tabsEl) {
+      tabsEl.innerHTML = opsUi.bundle.events.map((ev) => {
+        const isActive = activeEv && ev.id === activeEv.id;
+        const count = (ev.data && Array.isArray(ev.data.entries)) ? ev.data.entries.length : 0;
+        return `<button onclick="switchActiveEvent('${escapeJs(ev.id)}')"
+                        class="px-2.5 py-0.5 text-[11px] font-bold rounded transition flex items-center gap-1.5 border ${isActive
+                          ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
+                          : 'bg-slate-900/60 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'}">
+                  <span>${escapeHtml(ev.name)}</span>
+                  <span class="text-[9px] px-1 rounded ${isActive ? 'bg-slate-950/30 text-emerald-100' : 'bg-slate-800 text-slate-400'}">${count}組</span>
+                </button>`;
+      }).join('');
+    }
+    const venuePill = document.getElementById('active-event-venue-pill');
+    if (venuePill && activeEv) {
+      const cCount = (state.oop && state.oop.courtCount) || 4;
+      venuePill.textContent = `会場: ${activeEv.venue || '第1会場'} (${cCount}面)`;
+    }
+  }
+
+  function updateParentTournamentName(val) {
+    if (!opsUi.bundle) return;
+    opsUi.bundle.name = String(val || '').trim() || '大会';
+    saveBundleToLocalStorage();
+    if (state.mainView === 'oop') renderOopView();
+    if (state.mainView === 'spectator') renderSpectatorView();
+  }
+
+  function switchActiveEvent(eventId) {
+    if (!opsUi.bundle) return;
+    const currentEv = getActiveEvent();
+    if (currentEv && currentEv.id === eventId) return;
+    const targetEv = opsUi.bundle.events.find((ev) => ev.id === eventId);
+    if (!targetEv) return;
+
+    // 現在の種目を保存
+    if (currentEv) {
+      currentEv.data = captureActiveStateSnapshot();
+      currentEv.venue = (currentEv.data.oop && currentEv.data.oop.venue) || currentEv.venue;
+    }
+
+    opsUi.bundle.activeEventId = targetEv.id;
+    opsUi.oopSelectedMoveKey = null;
+    opsUi.oopOpenWoKey = null;
+
+    opsUi.suppressBundleSync = true;
+    hydrateStateFromSnapshot(targetEv.data);
+    opsUi.suppressBundleSync = false;
+
+    saveBundleToLocalStorage();
+    renderEventSwitcherBar();
+    updateOopHeaderBadge();
+
+    if (state.mainView === 'registration') {
+      renderSchoolAliasEditor();
+      renderRegistrationTable();
+    } else if (state.mainView === 'tournament') {
+      if (state.slots.length === 0 && state.entries.length >= 2) {
+        generateTournamentFromEntries(false, false);
+      }
+      renderBench();
+      renderTourneySidebar();
+      renderSheet();
+    } else if (state.mainView === 'oop') {
+      renderOopView();
+    } else if (state.mainView === 'spectator') {
+      opsUi.spectator.eventId = targetEv.id;
+      renderSpectatorView();
+    }
+    showToast(`種目「${targetEv.name}」に切り替えました`, 'info', 1800);
+  }
+
+  function openEventModal(mode) {
+    opsUi.eventModalMode = mode === 'edit' ? 'edit' : 'add';
+    const modal = document.getElementById('event-modal');
+    const titleEl = document.getElementById('event-modal-title');
+    const nameInput = document.getElementById('event-modal-name');
+    const venueInput = document.getElementById('event-modal-venue');
+    const courtRow = document.getElementById('event-modal-court-row');
+    const extraActions = document.getElementById('event-modal-extra-actions');
+    const courtsSel = document.getElementById('event-modal-courts');
+
+    if (opsUi.eventModalMode === 'add') {
+      const nextNum = (opsUi.bundle ? opsUi.bundle.events.length : 1) + 1;
+      const presetNames = ['男子個人', '女子個人', '男子団体', '女子団体'];
+      const suggested = presetNames[nextNum - 1] || `種目${nextNum}`;
+      titleEl.textContent = '新しい種目（別会場・別進行表）を追加';
+      nameInput.value = suggested;
+      venueInput.value = `第${nextNum}会場`;
+      courtsSel.value = '4';
+      courtRow.classList.remove('hidden');
+      extraActions.classList.add('hidden');
+    } else {
+      const ev = getActiveEvent();
+      if (!ev) return;
+      titleEl.textContent = `種目設定：${ev.name}`;
+      nameInput.value = ev.name || '';
+      venueInput.value = (state.oop && state.oop.venue) || ev.venue || '第1会場';
+      courtRow.classList.add('hidden');
+      extraActions.classList.remove('hidden');
+    }
+    modal.classList.remove('hidden');
+    setTimeout(() => nameInput.focus(), 40);
+  }
+
+  function closeEventModal() {
+    const modal = document.getElementById('event-modal');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  function submitEventModal() {
+    if (!opsUi.bundle) return;
+    const name = String(document.getElementById('event-modal-name').value || '').trim();
+    const venue = String(document.getElementById('event-modal-venue').value || '').trim() || '第1会場';
+    if (!name) {
+      alert('種目名を入力してください。');
+      return;
+    }
+
+    if (opsUi.eventModalMode === 'add') {
+      const courts = parseInt(document.getElementById('event-modal-courts').value, 10) || 4;
+      const curEv = getActiveEvent();
+      if (curEv) curEv.data = captureActiveStateSnapshot();
+
+      const newId = randomId('ev');
+      const newEv = {
+        id: newId,
+        name,
+        venue,
+        staffPin: generateStaffPin(),
+        data: createEmptyEventSnapshot(name, venue, courts)
+      };
+      opsUi.bundle.events.push(newEv);
+      closeEventModal();
+      switchActiveEvent(newId);
+      switchMainView('registration');
+      showToast(`種目「${name}（${venue}）」を追加しました`, 'success');
+    } else {
+      const ev = getActiveEvent();
+      if (!ev) return;
+      ev.name = name;
+      ev.venue = venue;
+      if (state.oop) state.oop.venue = venue;
+      ev.data = captureActiveStateSnapshot();
+      saveToLocalStorage();
+      saveBundleToLocalStorage();
+      closeEventModal();
+      renderEventSwitcherBar();
+      if (state.mainView === 'oop') renderOopView();
+      showToast(`種目設定を更新しました`, 'success');
+    }
+  }
+
+  function duplicateActiveEvent() {
+    if (!opsUi.bundle) return;
+    const ev = getActiveEvent();
+    if (!ev) return;
+    ev.data = captureActiveStateSnapshot();
+    const copyData = cloneDeep(ev.data);
+    const copyId = randomId('ev');
+    const copyName = `${ev.name}（コピー）`;
+    copyData.title = `${opsUi.bundle.name} ${copyName}`;
+    opsUi.bundle.events.push({
+      id: copyId,
+      name: copyName,
+      venue: ev.venue,
+      staffPin: generateStaffPin(),
+      data: copyData
+    });
+    closeEventModal();
+    switchActiveEvent(copyId);
+    showToast(`種目「${copyName}」を複製しました`, 'success');
+  }
+
+  function deleteActiveEvent() {
+    if (!opsUi.bundle) return;
+    if (opsUi.bundle.events.length <= 1) {
+      alert('最低1つの種目が必要なため削除できません。');
+      return;
+    }
+    const ev = getActiveEvent();
+    if (!ev) return;
+    if (!confirm(`種目「${ev.name}」を削除しますか？この操作は取り消せません。`)) return;
+    opsUi.bundle.events = opsUi.bundle.events.filter((item) => item.id !== ev.id);
+    const nextEv = opsUi.bundle.events[0];
+    opsUi.bundle.activeEventId = nextEv.id;
+    opsUi.suppressBundleSync = true;
+    hydrateStateFromSnapshot(nextEv.data);
+    opsUi.suppressBundleSync = false;
+    saveBundleToLocalStorage();
+    closeEventModal();
+    renderEventSwitcherBar();
+    switchMainView(state.mainView);
+    showToast(`種目「${ev.name}」を削除しました`, 'warn');
+  }
+
+  // =========================================================================
+  // 2. マルチイベント完全対応 JSON 保存・読込（旧単一種目JSONも互換読込）
+  // =========================================================================
+  function exportBundleJsonState() {
+    try {
+      const curEv = getActiveEvent();
+      const activeSnap = captureActiveStateSnapshot();
+      if (curEv) curEv.data = activeSnap;
+      saveBundleToLocalStorage();
+
+      // 旧バージョン互換のためアクティブ種目のトップレベル項目も併記
+      const payload = Object.assign({}, activeSnap, {
+        version: '6.0-bundle',
+        exportedAt: new Date().toISOString(),
+        bundle: cloneDeep(opsUi.bundle)
+      });
+
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const safeName = (opsUi.bundle.name || state.title || 'tournament').replace(/[\\/:*?"<>|]/g, '_');
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${safeName}_${dateStr}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast(`大会データ（全${opsUi.bundle.events.length}種目）をJSON保存しました`, 'success');
+    } catch (err) {
+      alert('JSON保存中にエラーが発生しました: ' + err.message);
+    }
+  }
+
+  function importBundleJsonState(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function (e) {
+      try {
+        const data = JSON.parse(e.target.result);
+        if (data && data.bundle && Array.isArray(data.bundle.events) && data.bundle.events.length > 0) {
+          opsUi.bundle = data.bundle;
+          if (!opsUi.bundle.publish) opsUi.bundle.publish = { enabled: true, passcode: '', nameDisplayMode: 'full' };
+          const activeEv = getActiveEvent();
+          opsUi.suppressBundleSync = true;
+          hydrateStateFromSnapshot(activeEv.data);
+          opsUi.suppressBundleSync = false;
+          saveBundleToLocalStorage();
+          saveToLocalStorage();
+          renderEventSwitcherBar();
+          updateOopHeaderBadge();
+          updatePublishIndicator();
+          if (state.slots.length > 0) switchMainView('tournament');
+          else switchMainView('registration');
+          showToast(`大会データ（${opsUi.bundle.events.length}種目）を読み込みました`, 'success');
+        } else if (data && Array.isArray(data.entries)) {
+          // 旧単一種目JSONを現在の種目へ読込
+          opsUi.suppressBundleSync = true;
+          hydrateStateFromSnapshot(data);
+          opsUi.suppressBundleSync = false;
+          const activeEv = getActiveEvent();
+          if (activeEv) activeEv.data = captureActiveStateSnapshot();
+          saveBundleToLocalStorage();
+          saveToLocalStorage();
+          renderEventSwitcherBar();
+          updateOopHeaderBadge();
+          if (state.slots.length > 0) switchMainView('tournament');
+          else switchMainView('registration');
+          showToast('単一種目JSONデータを現在の種目へ読み込みました', 'success');
+        } else {
+          throw new Error('有効なBracketFlow JSONデータではありません。');
+        }
+      } catch (err) {
+        alert('JSONファイルの読み込みに失敗しました: ' + err.message);
+      } finally {
+        event.target.value = '';
+      }
+    };
+    reader.readAsText(file, 'UTF-8');
+  }
+
+  // =========================================================================
+  // 3. 進行表・コート運営（OOP）エンジン連携 ＆ UI
+  // =========================================================================
+  function getActiveMatchCatalog(nameDisplayMode) {
+    const mode = nameDisplayMode || 'full';
+    const formatter = (entry) => OopEngine.formatSpectatorPairName(entry, mode, formatSchoolShortName);
+    return OopEngine.buildMatchCatalog({
+      bracketSize: state.bracketSize,
+      slots: state.slots,
+      activeSlotMask: state.activeSlotMask,
+      results: state.results,
+      consolation: state.consolation,
+      labelFormatter: formatter
+    });
+  }
+
+  function syncOopWithBracket() {
+    const catalog = getActiveMatchCatalog('full');
+    const reconciled = OopEngine.reconcileOopState(state.oop, catalog);
+    state.oop = reconciled.oop;
+    return { catalog, unassigned: reconciled.unassigned };
+  }
+
+  function updateOopHeaderBadge() {
+    const pill = document.getElementById('oop-live-pill');
+    if (!pill || !state.oop || !state.oop.statuses) return;
+    let activeCount = 0;
+    Object.values(state.oop.statuses).forEach((st) => {
+      if (st === 'playing' || st === 'calling') activeCount++;
+    });
+    if (activeCount > 0) {
+      pill.textContent = String(activeCount);
+      pill.classList.remove('hidden');
+    } else {
+      pill.classList.add('hidden');
+    }
+  }
+
+  function renderOopView() {
+    const { catalog, unassigned } = syncOopWithBracket();
+    updateOopHeaderBadge();
+    renderEventSwitcherBar();
+
+    // ツールバー値の同期
+    const venueInput = document.getElementById('oop-venue-input');
+    if (venueInput && document.activeElement !== venueInput) {
+      venueInput.value = state.oop.venue || '第1会場';
+    }
+    const courtSel = document.getElementById('oop-court-count-select');
+    if (courtSel) courtSel.value = String(state.oop.courtCount || 4);
+
+    const btnBlock = document.getElementById('btn-oop-mode-block');
+    const btnRound = document.getElementById('btn-oop-mode-round');
+    if (btnBlock && btnRound) {
+      const onCls = 'px-2 py-1 text-[11px] font-bold rounded-md bg-white text-slate-900 shadow-sm transition';
+      const offCls = 'px-2 py-1 text-[11px] font-bold rounded-md text-slate-600 hover:text-slate-900 transition';
+      btnBlock.className = state.oop.assignMode === 'block' ? onCls : offCls;
+      btnRound.className = state.oop.assignMode === 'round' ? onCls : offCls;
+    }
+
+    const umpireBtn = document.getElementById('btn-oop-umpire-toggle');
+    if (umpireBtn) {
+      const isOn = state.oop.umpireRule !== 'none';
+      umpireBtn.textContent = `敗者審判: ${isOn ? 'ON' : 'OFF'}`;
+      umpireBtn.className = isOn
+        ? 'px-2.5 py-1 text-[11px] font-bold rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 transition'
+        : 'px-2.5 py-1 text-[11px] font-bold rounded-lg border border-slate-300 bg-white text-slate-600 transition';
+    }
+
+    const btnBoard = document.getElementById('btn-oop-view-board');
+    const btnTable = document.getElementById('btn-oop-view-table');
+    const boardWs = document.getElementById('oop-board-workspace');
+    const tableWs = document.getElementById('oop-table-workspace');
+    const isTable = state.oop.viewStyle === 'table';
+    if (btnBoard && btnTable) {
+      const onCls = 'px-2.5 py-1 text-[11px] font-bold rounded-md bg-slate-900 text-white shadow-sm transition';
+      const offCls = 'px-2.5 py-1 text-[11px] font-bold rounded-md text-slate-600 hover:text-slate-900 transition';
+      btnBoard.className = !isTable ? onCls : offCls;
+      btnTable.className = isTable ? onCls : offCls;
+    }
+    if (boardWs) boardWs.classList.toggle('hidden', isTable);
+    if (tableWs) tableWs.classList.toggle('hidden', !isTable);
+
+    const cancelMoveBtn = document.getElementById('btn-oop-cancel-move');
+    if (cancelMoveBtn) cancelMoveBtn.classList.toggle('hidden', !opsUi.oopSelectedMoveKey);
+
+    const hideFinBtn = document.getElementById('btn-oop-hide-finished');
+    if (hideFinBtn) {
+      hideFinBtn.textContent = `終了済をたたむ: ${opsUi.oopHideFinished ? 'ON' : 'OFF'}`;
+      hideFinBtn.className = opsUi.oopHideFinished
+        ? 'px-2.5 py-1 text-[11px] font-bold rounded-lg border border-blue-400 bg-blue-50 text-blue-800 transition'
+        : 'px-2.5 py-1 text-[11px] font-bold rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 transition';
+    }
+
+    document.body.classList.toggle('oop-move-mode-active', Boolean(opsUi.oopSelectedMoveKey));
+    const moveHint = document.getElementById('oop-move-hint');
+    if (moveHint) {
+      if (opsUi.oopSelectedMoveKey && catalog.matchMap[opsUi.oopSelectedMoveKey]) {
+        const sm = catalog.matchMap[opsUi.oopSelectedMoveKey];
+        moveHint.innerHTML = `<span class="text-blue-700 font-bold">移動先を選択中（${escapeHtml(sm.matchNo)}）：挿入したい試合の間の「＋」をクリックしてください</span>`;
+      } else {
+        moveHint.textContent = 'カードをドラッグまたは「移動」で、任意の試合と試合の間に挿入できます';
+      }
+    }
+
+    // 進捗サマリー計算
+    let playing = 0;
+    let calling = 0;
+    let finished = 0;
+    let readyWaiting = 0;
+    catalog.matches.forEach((m) => {
+      const st = state.oop.statuses[m.key] || 'waiting';
+      if (st === 'playing') playing++;
+      else if (st === 'calling') calling++;
+      else if (st === 'finished' || st === 'wo') finished++;
+      else if (m.isReady) readyWaiting++;
+    });
+    const total = catalog.matches.length;
+    const pct = total > 0 ? Math.round((finished / total) * 100) : 0;
+
+    const statsBar = document.getElementById('oop-stats-bar');
+    if (statsBar) {
+      statsBar.innerHTML = `
+        <span class="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 font-bold text-slate-700">全${total}試合（進捗 ${pct}%）</span>
+        <span class="px-2 py-0.5 rounded-full bg-rose-100 border border-rose-200 font-bold text-rose-800">試合中 ${playing}</span>
+        <span class="px-2 py-0.5 rounded-full bg-amber-100 border border-amber-200 font-bold text-amber-800">コール中 ${calling}</span>
+        <span class="px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 font-bold text-blue-800">実施可能待機 ${readyWaiting}</span>
+        <span class="px-2 py-0.5 rounded-full bg-emerald-100 border border-emerald-200 font-bold text-emerald-800">終了 ${finished}</span>
+      `;
+    }
+
+    if (!isTable) {
+      renderOopBoard(catalog, unassigned);
+    } else {
+      renderOopPrintSheet(catalog);
+    }
+  }
+
+  function renderOopBoard(catalog, unassigned) {
+    const grid = document.getElementById('oop-courts-grid');
+    if (!grid) return;
+
+    const nCourts = state.oop.courtCount || 4;
+    const formatter = (entry) => OopEngine.formatSpectatorPairName(entry, 'full', formatSchoolShortName);
+
+    // 未割当サイドバーの表示制御（未割当があるか手動展開時のみ表示して横幅を最大活用）
+    const sidebar = document.getElementById('oop-queue-sidebar');
+    if (sidebar) {
+      const showSidebar = opsUi.oopQueueDrawerOpen || unassigned.length > 0;
+      sidebar.classList.toggle('hidden', !showSidebar);
+    }
+
+    // 全コートの最大表示試合数を算出（ヘッダー列「第1試合・第2試合…」用）
+    let maxVisibleCols = 1;
+    const courtRowsData = [];
+    for (let c = 1; c <= nCourts; c++) {
+      const cKey = String(c);
+      const courtKeys = Array.isArray(state.oop.courts[cKey]) ? state.oop.courts[cKey] : [];
+      const live = OopEngine.getCourtLiveSlots(courtKeys, catalog.matchMap, state.oop.statuses);
+      const items = [];
+      let hiddenFinishedCount = 0;
+
+      // 各試合のロール（現在/次/次々）を事前マップ
+      const roleMap = {};
+      if (live.current) roleMap[live.current.key] = 'CURRENT';
+      if (live.next) roleMap[live.next.key] = live.current ? 'NEXT' : 'READY';
+      if (live.onDeck) roleMap[live.onDeck.key] = 'ONDECK';
+
+      courtKeys.forEach((mKey, rawIdx) => {
+        const m = catalog.matchMap[mKey];
+        if (!m) return;
+        const st = state.oop.statuses[mKey] || 'waiting';
+        if (opsUi.oopHideFinished && (st === 'finished' || st === 'wo')) {
+          hiddenFinishedCount++;
+          return;
+        }
+        items.push({ key: mKey, match: m, status: st, indexInCourt: rawIdx, role: roleMap[mKey] || '' });
+      });
+
+      if (items.length > maxVisibleCols) maxVisibleCols = items.length;
+      courtRowsData.push({ c, cKey, courtKeys, live, items, hiddenFinishedCount });
+    }
+
+    const renderInsertZone = (courtKey, insertIdx, labelText) => `
+      <div class="oop-insert-zone shrink-0"
+           title="${escapeHtml(labelText || 'ここに挿入')}"
+           onclick="handleOopInsertZoneClick('${courtKey}', ${insertIdx})"
+           ondragover="handleOopInsertDragOver(event)"
+           ondragleave="handleOopInsertDragLeave(event)"
+           ondrop="handleOopInsertDrop(event, '${courtKey}', ${insertIdx})">
+        <span class="oop-insert-badge text-[11px] font-extrabold text-blue-700 select-none">＋</span>
+      </div>
+    `;
+
+    // 全コート横タイムライン一覧テーブル構造
+    let rowsHtml = '';
+    courtRowsData.forEach(({ c, cKey, courtKeys, live, items, hiddenFinishedCount }) => {
+      let statusBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-200 text-slate-700">空き</span>`;
+      let rowAccent = 'border-l-slate-300';
+      if (live.current && live.current.status === 'playing') {
+        statusBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-600 text-white inline-flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-white live-dot"></span>試合中</span>`;
+        rowAccent = 'border-l-rose-500';
+      } else if (live.current && live.current.status === 'calling') {
+        statusBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500 text-white">コール中</span>`;
+        rowAccent = 'border-l-amber-500';
+      } else if (courtKeys.length > 0 && live.finished.length === courtKeys.length) {
+        statusBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">完了</span>`;
+        rowAccent = 'border-l-emerald-500';
+      }
+
+      // 横並びの試合カード＋カード間挿入スロット
+      let laneHtml = '';
+      if (hiddenFinishedCount > 0) {
+        laneHtml += `
+          <button onclick="toggleOopHideFinished()"
+                  class="shrink-0 w-16 mr-1 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 text-[10px] font-bold text-slate-600 flex flex-col items-center justify-center p-1 transition"
+                  title="クリックして終了済み試合を再表示">
+            <span class="text-emerald-700">済 ${hiddenFinishedCount}</span>
+            <span class="text-[9px] text-slate-400">表示▸</span>
+          </button>
+        `;
+      }
+
+      if (items.length === 0) {
+        laneHtml += `
+          <div class="flex items-center flex-1 min-h-[96px]">
+            ${renderInsertZone(cKey, courtKeys.length, `コート${c}の先頭へ挿入`)}
+            <div class="flex-1 text-center text-[11px] text-slate-400 py-4 border border-dashed border-slate-200 rounded-lg mx-1"
+                 ondragover="handleOopDragOver(event)"
+                 ondragleave="handleOopDragLeave(event)"
+                 ondrop="handleOopInsertDrop(event, '${cKey}', ${courtKeys.length})">
+              ${courtKeys.length === 0 ? '割り当て試合なし（ここへドラッグ＆ドロップ）' : '未終了の試合はありません'}
+            </div>
+          </div>
+        `;
+      } else {
+        // 先頭の挿入スロット
+        laneHtml += renderInsertZone(cKey, items[0].indexInCourt, `コート${c} 第${items[0].indexInCourt + 1}試合の前に挿入`);
+        items.forEach((item, visIdx) => {
+          laneHtml += renderOopTimelineCardHtml(item, cKey, courtKeys, catalog.matchMap, formatter);
+          const nextInsertIdx = item.indexInCourt + 1;
+          const label = visIdx < items.length - 1
+            ? `コート${c} ${item.match.matchNo}と${items[visIdx + 1].match.matchNo}の間に挿入`
+            : `コート${c} の末尾へ追加`;
+          laneHtml += renderInsertZone(cKey, nextInsertIdx, label);
+        });
+      }
+
+      rowsHtml += `
+        <div class="flex items-stretch bg-white border border-slate-200 border-l-4 ${rowAccent} rounded-xl shadow-sm overflow-visible min-w-max">
+          <!-- 固定左列：コート情報 -->
+          <div class="sticky left-0 z-10 w-28 shrink-0 bg-slate-50/95 backdrop-blur-sm border-r border-slate-200 px-2.5 py-2 flex flex-col justify-between rounded-l-lg">
+            <div class="space-y-1">
+              <div class="text-xs font-extrabold text-slate-900">コート ${c}</div>
+              <div>${statusBadge}</div>
+            </div>
+            <div class="pt-1.5 border-t border-slate-200/80 text-[10px] font-bold text-slate-500 flex items-center justify-between">
+              <span>進捗</span>
+              <span>${live.finished.length}/${courtKeys.length}</span>
+            </div>
+          </div>
+
+          <!-- 横スクロール試合レーン -->
+          <div class="flex items-stretch py-2 px-1.5">
+            ${laneHtml}
+          </div>
+        </div>
+      `;
+    });
+
+    // 列見出し（第1試合・第2試合…の目安バー）
+    let colHeaderCells = '';
+    for (let i = 0; i < Math.max(4, maxVisibleCols); i++) {
+      colHeaderCells += `<div class="w-[228px] shrink-0 text-center text-[10px] font-bold text-slate-500">${opsUi.oopHideFinished ? `待機順 ${i + 1}` : `第 ${i + 1} 試合`}</div>`;
+    }
+
+    grid.innerHTML = `
+      <div class="space-y-2 min-w-max pb-4">
+        <div class="flex items-center min-w-max sticky top-0 z-20 bg-slate-100/95 backdrop-blur-sm py-1 border-b border-slate-200">
+          <div class="sticky left-0 z-30 w-28 shrink-0 bg-slate-100 px-3 text-[10px] font-extrabold text-slate-600 uppercase tracking-wider">全${nCourts}コート一覧</div>
+          <div class="flex items-center px-3 gap-0">
+            ${colHeaderCells}
+          </div>
+        </div>
+        ${rowsHtml}
+      </div>
+    `;
+
+    // 未割当キュー描画
+    const unassignedCountEl = document.getElementById('oop-unassigned-count');
+    const unassignedListEl = document.getElementById('oop-unassigned-list');
+    if (unassignedCountEl) {
+      unassignedCountEl.textContent = String(unassigned.length);
+      unassignedCountEl.className = unassigned.length > 0
+        ? 'px-1.5 rounded-full bg-amber-500 text-white text-[10px]'
+        : 'px-1.5 rounded-full bg-slate-300 text-slate-800 text-[10px]';
+    }
+    if (unassignedListEl) {
+      if (unassigned.length === 0) {
+        unassignedListEl.innerHTML = `<div class="text-center py-6 text-[11px] text-slate-400">未割当の試合はありません<br/>全試合がコートに配分済です</div>`;
+      } else {
+        unassignedListEl.innerHTML = unassigned.map((mKey) => {
+          const m = catalog.matchMap[mKey];
+          if (!m) return '';
+          const isSelected = opsUi.oopSelectedMoveKey === mKey;
+          return `<div draggable="true"
+                       ondragstart="handleOopDragStart(event, '${escapeJs(mKey)}')"
+                       ondragend="handleOopDragEnd(event)"
+                       class="oop-match-card ${isSelected ? 'oop-selected-move' : ''} p-2 rounded-lg border border-slate-200 bg-slate-50 text-[11px] space-y-1 cursor-grab">
+            <div class="flex items-center justify-between gap-1">
+              <span class="font-bold text-slate-800">${escapeHtml(m.matchNo)} <span class="text-[10px] text-slate-500">${escapeHtml(m.roundLabel)}</span></span>
+              <button onclick="selectOopMatchForMove('${escapeJs(mKey)}')" class="px-1.5 py-0.5 text-[10px] font-bold bg-white border border-slate-300 rounded hover:bg-blue-50 text-blue-700">挿入移動</button>
+            </div>
+            <div class="text-[10px] text-slate-700 truncate">${escapeHtml(m.p1Label)}</div>
+            <div class="text-[10px] text-slate-700 truncate">vs ${escapeHtml(m.p2Label)}</div>
+          </div>`;
+        }).join('');
+      }
+    }
+  }
+
+  function renderOopTimelineCardHtml(item, courtKey, courtKeys, matchMap, formatter) {
+    const m = item.match;
+    const st = item.status;
+    const role = item.role;
+    const isSelected = opsUi.oopSelectedMoveKey === m.key;
+    const isWoOpen = opsUi.oopOpenWoKey === m.key;
+    const isFinished = st === 'finished' || st === 'wo';
+    const umpire = OopEngine.getUmpireLabel(courtKeys, item.indexInCourt, matchMap, state.oop, formatter);
+
+    let cardStyle = 'bg-white border-slate-200';
+    let rolePill = '';
+    if (st === 'playing') {
+      cardStyle = 'bg-rose-50/85 border-rose-400 ring-1 ring-rose-300';
+      rolePill = `<span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-600 text-white">試合中</span>`;
+    } else if (st === 'calling') {
+      cardStyle = 'bg-amber-50/90 border-amber-400 ring-1 ring-amber-300';
+      rolePill = `<span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-500 text-white">コール</span>`;
+    } else if (isFinished) {
+      cardStyle = 'bg-slate-50/90 border-slate-200 opacity-85';
+      const sc = m.result ? `${m.result.g1}-${m.result.g2}` : '済';
+      rolePill = `<span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-100 text-emerald-800">${escapeHtml(sc)}</span>`;
+    } else if (role === 'NEXT' || role === 'READY') {
+      cardStyle = 'bg-blue-50/50 border-blue-300';
+      rolePill = `<span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-blue-600 text-white">${role === 'NEXT' ? '次試合' : '次予定'}</span>`;
+    } else if (role === 'ONDECK') {
+      cardStyle = 'bg-sky-50/30 border-slate-300';
+      rolePill = `<span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-slate-200 text-slate-700">次々</span>`;
+    }
+
+    const mtBadge = m.isConsolation
+      ? `<span class="px-1 rounded text-[9px] font-bold bg-purple-100 text-purple-800">順位</span>`
+      : `<span class="px-1 rounded text-[9px] font-bold bg-slate-100 text-slate-600">${escapeHtml(m.mountain)}</span>`;
+
+    const readyDisabled = !m.isReady ? 'opacity-40 cursor-not-allowed' : '';
+    const canMove = !isFinished;
+    const dragAttrs = canMove
+      ? `draggable="true" ondragstart="handleOopDragStart(event, '${escapeJs(m.key)}')" ondragend="handleOopDragEnd(event)"`
+      : '';
+
+    const win0 = Boolean(m.result && m.result.winner === 0);
+    const win1 = Boolean(m.result && m.result.winner === 1);
+
+    let actionBtns = '';
+    if (isFinished) {
+      actionBtns = `
+        <button onclick="openOopScoreInput('${escapeJs(m.key)}')"
+                class="px-2 py-0.5 text-[10px] font-bold rounded bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 transition">結果修正</button>
+      `;
+    } else if (st === 'waiting') {
+      actionBtns = `
+        <button ${!m.isReady ? 'disabled' : ''} onclick="setOopMatchStatus('${escapeJs(m.key)}', 'calling')"
+                class="px-1.5 py-0.5 text-[10px] font-bold rounded bg-amber-500 hover:bg-amber-400 text-white transition ${readyDisabled}">コール</button>
+        <button ${!m.isReady ? 'disabled' : ''} onclick="setOopMatchStatus('${escapeJs(m.key)}', 'playing')"
+                class="px-1.5 py-0.5 text-[10px] font-bold rounded bg-rose-600 hover:bg-rose-500 text-white transition ${readyDisabled}">開始</button>
+        <button ${!m.isReady ? 'disabled' : ''} onclick="openOopScoreInput('${escapeJs(m.key)}')"
+                class="px-1.5 py-0.5 text-[10px] font-bold rounded bg-blue-600 hover:bg-blue-500 text-white transition ${readyDisabled}">結果</button>
+        <button ${!m.isReady ? 'disabled' : ''} onclick="toggleOopWoChooser('${escapeJs(m.key)}')"
+                class="px-1.5 py-0.5 text-[10px] font-bold rounded bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 transition ${readyDisabled}">棄権</button>
+      `;
+    } else if (st === 'calling') {
+      actionBtns = `
+        <button onclick="setOopMatchStatus('${escapeJs(m.key)}', 'playing')"
+                class="px-2 py-0.5 text-[10px] font-bold rounded bg-rose-600 hover:bg-rose-500 text-white transition">開始</button>
+        <button onclick="openOopScoreInput('${escapeJs(m.key)}')"
+                class="px-1.5 py-0.5 text-[10px] font-bold rounded bg-blue-600 hover:bg-blue-500 text-white transition">結果</button>
+        <button onclick="toggleOopWoChooser('${escapeJs(m.key)}')"
+                class="px-1.5 py-0.5 text-[10px] font-bold rounded bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 transition">棄権</button>
+        <button onclick="setOopMatchStatus('${escapeJs(m.key)}', 'waiting')"
+                class="px-1 py-0.5 text-[10px] font-bold text-slate-500 hover:text-slate-800">戻す</button>
+      `;
+    } else if (st === 'playing') {
+      actionBtns = `
+        <button onclick="openOopScoreInput('${escapeJs(m.key)}')"
+                class="px-2 py-0.5 text-[10px] font-bold rounded bg-blue-600 hover:bg-blue-500 text-white shadow-sm transition">スコア入力</button>
+        <button onclick="toggleOopWoChooser('${escapeJs(m.key)}')"
+                class="px-1.5 py-0.5 text-[10px] font-bold rounded bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 transition">棄権</button>
+        <button onclick="setOopMatchStatus('${escapeJs(m.key)}', 'waiting')"
+                class="px-1 py-0.5 text-[10px] font-bold text-slate-500 hover:text-slate-800">戻す</button>
+      `;
+    }
+
+    const woPanel = isWoOpen ? `
+      <div class="mt-1 p-1.5 rounded bg-amber-50 border border-amber-300 space-y-1 text-[10px]">
+        <div class="font-bold text-amber-950">不戦勝ペアを選択：</div>
+        <button onclick="recordOopWalkover('${escapeJs(m.key)}', 0)" class="w-full text-left px-1.5 py-0.5 rounded bg-white hover:bg-emerald-50 border border-emerald-300 font-bold text-emerald-900 truncate">○ ${escapeHtml(m.p1Label)}</button>
+        <button onclick="recordOopWalkover('${escapeJs(m.key)}', 1)" class="w-full text-left px-1.5 py-0.5 rounded bg-white hover:bg-emerald-50 border border-emerald-300 font-bold text-emerald-900 truncate">○ ${escapeHtml(m.p2Label)}</button>
+      </div>` : '';
+
+    return `
+      <div ${dragAttrs}
+           ondragover="handleOopCardDragOver(event)"
+           ondragleave="handleOopCardDragLeave(event)"
+           ondrop="handleOopCardDrop(event, '${courtKey}', ${item.indexInCourt})"
+           class="oop-match-card ${isSelected ? 'oop-selected-move' : ''} w-[216px] shrink-0 p-2 rounded-lg border ${cardStyle} text-[11px] flex flex-col justify-between gap-1 ${canMove ? 'cursor-grab active:cursor-grabbing' : ''}">
+        <div class="space-y-1">
+          <!-- 1行目：試合番号・ラウンド・状態・移動 -->
+          <div class="flex items-center justify-between gap-1">
+            <div class="flex items-center gap-1 min-w-0">
+              <span class="font-extrabold text-slate-900 text-[11px]">${escapeHtml(m.matchNo)}</span>
+              <span class="text-[10px] font-bold text-slate-500 truncate">${escapeHtml(m.roundLabel)}</span>
+              ${mtBadge}
+            </div>
+            <div class="flex items-center gap-1 shrink-0">
+              ${rolePill}
+              ${canMove ? `<button onclick="selectOopMatchForMove('${escapeJs(m.key)}')" class="px-1.5 py-0.2 text-[9px] font-bold rounded border ${isSelected ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-blue-50'}" title="別の場所・試合間へ挿入移動">移動</button>` : ''}
+            </div>
+          </div>
+
+          <!-- 2行目：対戦カード -->
+          <div class="pl-1.5 border-l-2 ${m.isReady ? 'border-slate-300' : 'border-dashed border-slate-200'} space-y-0.5 leading-tight">
+            <div class="text-[11px] truncate ${win0 ? 'font-extrabold text-rose-700' : (m.p1Entry ? 'font-bold text-slate-900' : 'text-slate-400 italic')}" title="${escapeHtml(m.p1Label)}">${escapeHtml(m.p1Label)}</div>
+            <div class="text-[11px] truncate ${win1 ? 'font-extrabold text-rose-700' : (m.p2Entry ? 'font-bold text-slate-900' : 'text-slate-400 italic')}" title="${escapeHtml(m.p2Label)}">${escapeHtml(m.p2Label)}</div>
+          </div>
+
+          <!-- 3行目：審判メモ -->
+          ${umpire.text || state.oop.umpireRule !== 'none' ? `
+            <div class="flex items-center justify-between gap-1 text-[9.5px] ${umpire.isCustom ? 'bg-indigo-50 text-indigo-800 border-indigo-200' : 'bg-slate-50 text-slate-600 border-slate-200'} border rounded px-1.5 py-0.2">
+              <span class="truncate" title="${escapeHtml(umpire.text || '審判未設定')}">審: ${escapeHtml(umpire.text || '未設定')}</span>
+              <button onclick="openUmpireModal('${escapeJs(m.key)}')" class="text-[9px] font-bold text-blue-600 hover:underline shrink-0">✎</button>
+            </div>` : ''}
+        </div>
+
+        <!-- 4行目：ステータス操作ボタン -->
+        <div class="flex items-center gap-1 pt-0.5 flex-wrap">
+          ${actionBtns}
+        </div>
+        ${woPanel}
+      </div>
+    `;
+  }
+
+  function renderOopFinishedMiniCardHtml(item) {
+    const m = item.match;
+    const res = m.result;
+    const scoreStr = res ? `${res.g1}-${res.g2}` : '終了';
+    const win0 = res && res.winner === 0;
+    const win1 = res && res.winner === 1;
+    return `
+      <div class="p-1.5 rounded bg-white border border-slate-200 text-[10px] flex items-center justify-between gap-2">
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-1">
+            <span class="font-bold text-slate-500">${escapeHtml(m.matchNo)}</span>
+            <span class="px-1 rounded bg-emerald-100 text-emerald-800 font-bold">${escapeHtml(scoreStr)}</span>
+            ${m.isWo ? `<span class="px-1 rounded bg-amber-100 text-amber-800 font-bold">WO</span>` : ''}
+          </div>
+          <div class="truncate ${win0 ? 'font-bold text-rose-700' : 'text-slate-500'}">${escapeHtml(m.p1Label)}</div>
+          <div class="truncate ${win1 ? 'font-bold text-rose-700' : 'text-slate-500'}">${escapeHtml(m.p2Label)}</div>
+        </div>
+        <button onclick="openOopScoreInput('${escapeJs(m.key)}')"
+                class="px-1.5 py-0.5 text-[9px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded shrink-0">修正</button>
+      </div>
+    `;
+  }
+
+  function renderOopPrintSheet(catalog) {
+    const sheet = document.getElementById('oop-print-sheet');
+    if (!sheet) return;
+    const ev = getActiveEvent();
+    const nCourts = state.oop.courtCount || 4;
+    const formatter = (entry) => OopEngine.formatSpectatorPairName(entry, 'full', formatSchoolShortName);
+
+    // 8面を超える場合は読みやすさのため8面ずつ段分け
+    const chunkSize = nCourts > 8 ? Math.ceil(nCourts / 2) : nCourts;
+    const chunks = [];
+    for (let start = 1; start <= nCourts; start += chunkSize) {
+      const end = Math.min(nCourts, start + chunkSize - 1);
+      const list = [];
+      for (let c = start; c <= end; c++) list.push(String(c));
+      chunks.push(list);
+    }
+
+    const tablesHtml = chunks.map((courtList) => {
+      let maxRows = 0;
+      courtList.forEach((cKey) => {
+        const len = (state.oop.courts[cKey] || []).length;
+        if (len > maxRows) maxRows = len;
+      });
+      maxRows = Math.max(1, maxRows);
+
+      let rowsHtml = '';
+      for (let r = 0; r < maxRows; r++) {
+        rowsHtml += `<tr class="align-top">
+          <td class="border border-slate-400 bg-slate-50 text-center font-bold text-[11px] px-1.5 py-2 w-10">第${r + 1}<br/>試合</td>
+          ${courtList.map((cKey) => {
+            const cKeys = state.oop.courts[cKey] || [];
+            const mKey = cKeys[r];
+            const m = mKey ? catalog.matchMap[mKey] : null;
+            if (!m) {
+              return `<td class="border border-slate-300 bg-slate-50/40 p-1.5 text-center text-[10px] text-slate-300">-</td>`;
+            }
+            const umpire = OopEngine.getUmpireLabel(cKeys, r, catalog.matchMap, state.oop, formatter);
+            const res = m.result;
+            const st = state.oop.statuses[mKey] || 'waiting';
+            const scoreBox = res
+              ? `<span class="px-1.5 py-0.5 rounded bg-rose-50 border border-rose-300 text-rose-700 font-extrabold text-[10px]">${escapeHtml(res.g1)} - ${escapeHtml(res.g2)}</span>`
+              : (st === 'playing'
+                ? `<span class="px-1.5 py-0.5 rounded bg-rose-600 text-white font-bold text-[9px]">試合中</span>`
+                : (st === 'calling'
+                  ? `<span class="px-1.5 py-0.5 rounded bg-amber-500 text-white font-bold text-[9px]">コール中</span>`
+                  : `<span class="inline-block px-2 py-0.5 border border-slate-300 rounded text-[9px] text-slate-400">　 - 　</span>`));
+            return `<td class="border border-slate-400 p-1.5 text-[10px] leading-snug">
+              <div class="flex items-center justify-between gap-1 mb-1 border-b border-slate-200 pb-0.5">
+                <span class="font-extrabold text-slate-900">${escapeHtml(m.matchNo)} <span class="font-semibold text-slate-600">${escapeHtml(m.roundLabel)}</span></span>
+                ${scoreBox}
+              </div>
+              <div class="font-bold text-slate-900 break-words">${escapeHtml(m.p1Label)}</div>
+              <div class="text-[9px] text-slate-400 font-bold">vs</div>
+              <div class="font-bold text-slate-900 break-words">${escapeHtml(m.p2Label)}</div>
+              ${umpire.text ? `<div class="mt-1 pt-0.5 border-t border-dashed border-slate-200 text-[9px] text-slate-600">審判: ${escapeHtml(umpire.text)}</div>` : ''}
+            </td>`;
+          }).join('')}
+        </tr>`;
+      }
+
+      return `
+        <div class="overflow-x-auto mb-5">
+          <table class="w-full border-collapse table-fixed">
+            <thead>
+              <tr class="bg-slate-800 text-white text-xs">
+                <th class="border border-slate-600 py-1.5 px-1 w-10">順</th>
+                ${courtList.map((cKey) => `<th class="border border-slate-600 py-1.5 px-2">コート ${cKey}</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+      `;
+    }).join('');
+
+    sheet.innerHTML = `
+      <div class="mb-4 pb-2.5 border-b-2 border-slate-800 flex flex-wrap items-baseline justify-between gap-3">
+        <div>
+          <div class="text-[11px] font-bold text-slate-500">${escapeHtml(opsUi.bundle ? opsUi.bundle.name : '')}</div>
+          <h2 class="text-lg font-extrabold text-slate-900">${escapeHtml(ev ? ev.name : state.title)} — コート別進行表（OOP）</h2>
+        </div>
+        <div class="flex flex-wrap items-center gap-3 text-xs font-bold text-slate-700">
+          <span>会場: ${escapeHtml(state.oop.venue || '第1会場')}</span>
+          <span>コート数: ${nCourts}面</span>
+          <span>${state.matchFormat}ゲームマッチ</span>
+          <span>全${catalog.matches.length}試合</span>
+        </div>
+      </div>
+      ${tablesHtml}
+    `;
+  }
+
+  // OOP操作アクション
+  function updateOopVenue(val) {
+    if (!state.oop) state.oop = OopEngine.createDefaultOopState();
+    state.oop.venue = String(val || '').trim() || '第1会場';
+    const ev = getActiveEvent();
+    if (ev) ev.venue = state.oop.venue;
+    saveToLocalStorage();
+    renderEventSwitcherBar();
+  }
+
+  function changeOopCourtCount(val) {
+    const nextCount = Math.max(1, Math.min(24, parseInt(val, 10) || 4));
+    const catalog = getActiveMatchCatalog('full');
+    state.oop.courtCount = nextCount;
+    state.oop.courts = OopEngine.generateCourtAssignments(catalog.matches, nextCount, state.oop.assignMode, state.oop, true);
+    state.oop.updatedAt = new Date().toISOString();
+    saveToLocalStorage();
+    renderOopView();
+    showToast(`コート数を${nextCount}面に変更し、待機試合を再配分しました`, 'success');
+  }
+
+  function setOopAssignMode(mode) {
+    state.oop.assignMode = mode === 'round' ? 'round' : 'block';
+    saveToLocalStorage();
+    renderOopView();
+  }
+
+  function regenerateOopSchedule(preserveActive) {
+    const catalog = getActiveMatchCatalog('full');
+    if (!preserveActive && !confirm('試合中・終了済みの位置も含めて全試合のコート割当を初期ルールで再作成しますか？（スコア結果は消えません）')) {
+      return;
+    }
+    state.oop.courts = OopEngine.generateCourtAssignments(
+      catalog.matches,
+      state.oop.courtCount,
+      state.oop.assignMode,
+      state.oop,
+      Boolean(preserveActive)
+    );
+    state.oop.updatedAt = new Date().toISOString();
+    saveToLocalStorage();
+    renderOopView();
+    showToast(preserveActive ? '進行中・終了済みを維持して待機試合を再配分しました' : '進行表を初期ルールで再生成しました', 'success');
+  }
+
+  function toggleOopUmpireRule() {
+    state.oop.umpireRule = (state.oop.umpireRule === 'none') ? 'loser' : 'none';
+    saveToLocalStorage();
+    renderOopView();
+  }
+
+  function setOopViewStyle(style) {
+    state.oop.viewStyle = style === 'table' ? 'table' : 'board';
+    saveToLocalStorage();
+    renderOopView();
+  }
+
+  function toggleOopCourtFinished(courtKey) {
+    opsUi.oopFinishedCollapsed[courtKey] = (opsUi.oopFinishedCollapsed[courtKey] === false);
+    renderOopView();
+  }
+
+  function setOopMatchStatus(matchKey, newStatus) {
+    if (!state.oop) return;
+    if (newStatus === 'playing' || newStatus === 'calling') {
+      // 同一コートに別の試合中がある場合、確認なしでスムーズに切り替えられるよう注意トーストのみ
+      const courtOfKey = Object.keys(state.oop.courts).find((c) => (state.oop.courts[c] || []).includes(matchKey));
+      if (courtOfKey && newStatus === 'playing') {
+        const anotherPlaying = (state.oop.courts[courtOfKey] || []).find(
+          (k) => k !== matchKey && state.oop.statuses[k] === 'playing'
+        );
+        if (anotherPlaying) {
+          showToast(`コート${courtOfKey}には別の試合中カードがあります。必要に応じて終了処理してください。`, 'warn', 3200);
+        }
+      }
+    }
+    state.oop.statuses[matchKey] = newStatus;
+    state.oop.updatedAt = new Date().toISOString();
+    opsUi.oopOpenWoKey = null;
+    saveToLocalStorage();
+    renderOopView();
+  }
+
+  function openOopScoreInput(matchKey) {
+    const catalog = getActiveMatchCatalog('full');
+    const m = catalog.matchMap[matchKey];
+    if (!m) return;
+    opsUi.oopOpenWoKey = null;
+    const rawKey = m.isConsolation ? String(m.consolationIndex) : m.key;
+    openScoreModal(rawKey, m.p1Label, m.p2Label, m.isConsolation, true);
+  }
+
+  function toggleOopWoChooser(matchKey) {
+    opsUi.oopOpenWoKey = (opsUi.oopOpenWoKey === matchKey) ? null : matchKey;
+    renderOopView();
+  }
+
+  function recordOopWalkover(matchKey, winnerSide) {
+    const catalog = getActiveMatchCatalog('full');
+    const m = catalog.matchMap[matchKey];
+    if (!m) return;
+    pushHistory();
+    const resObj = {
+      winner: winnerSide === 0 ? 0 : 1,
+      g1: winnerSide === 0 ? '○' : '棄',
+      g2: winnerSide === 1 ? '○' : '棄',
+      wo: true
+    };
+    if (m.isConsolation) {
+      state.consolation.results[String(m.consolationIndex)] = resObj;
+    } else {
+      state.results[m.key] = resObj;
+    }
+    state.oop.statuses[matchKey] = 'wo';
+    state.oop.updatedAt = new Date().toISOString();
+    opsUi.oopOpenWoKey = null;
+    saveToLocalStorage();
+    renderSheet();
+    renderOopView();
+    showToast(`${m.matchNo} を棄権（WO）で確定し、トーナメント表へ反映しました`, 'success');
+  }
+
+  function selectOopMatchForMove(matchKey) {
+    opsUi.oopSelectedMoveKey = (opsUi.oopSelectedMoveKey === matchKey) ? null : matchKey;
+    renderOopView();
+  }
+
+  function cancelOopMoveSelection() {
+    opsUi.oopSelectedMoveKey = null;
+    renderOopView();
+  }
+
+  function moveOopMatchToCourt(matchKey, targetCourtKey, insertIndex) {
+    if (!matchKey || !state.oop || !state.oop.courts[targetCourtKey]) return;
+    const moved = OopEngine.moveMatchInCourts(state.oop.courts, matchKey, targetCourtKey, insertIndex);
+    state.oop.courts = moved.courts;
+    state.oop.updatedAt = new Date().toISOString();
+    opsUi.oopSelectedMoveKey = null;
+    document.body.classList.remove('oop-dragging-active');
+    document.body.classList.remove('oop-move-mode-active');
+    saveToLocalStorage();
+    renderOopView();
+    showToast(`コート${targetCourtKey}の第${moved.insertedIndex + 1}試合位置へ移動しました`, 'info', 2000);
+  }
+
+  function toggleOopHideFinished() {
+    opsUi.oopHideFinished = !opsUi.oopHideFinished;
+    renderOopView();
+  }
+
+  function toggleOopQueueDrawer() {
+    opsUi.oopQueueDrawerOpen = !opsUi.oopQueueDrawerOpen;
+    renderOopView();
+  }
+
+  function reorderOopMatch(courtKey, matchKey, delta) {
+    const list = state.oop.courts[courtKey];
+    if (!Array.isArray(list)) return;
+    const idx = list.indexOf(matchKey);
+    if (idx < 0) return;
+    const nextIdx = idx + delta;
+    if (nextIdx < 0 || nextIdx >= list.length) return;
+    const tmp = list[idx];
+    list[idx] = list[nextIdx];
+    list[nextIdx] = tmp;
+    state.oop.updatedAt = new Date().toISOString();
+    saveToLocalStorage();
+    renderOopView();
+  }
+
+  function handleOopDragStart(event, matchKey) {
+    opsUi.oopDragKey = matchKey;
+    document.body.classList.add('oop-dragging-active');
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', matchKey);
+    }
+  }
+
+  function handleOopDragEnd() {
+    opsUi.oopDragKey = null;
+    document.body.classList.remove('oop-dragging-active');
+    document.querySelectorAll('.oop-insert-hover,.oop-drop-left,.oop-drop-right,.oop-court-drop-active').forEach((el) => {
+      el.classList.remove('oop-insert-hover', 'oop-drop-left', 'oop-drop-right', 'oop-court-drop-active');
+    });
+  }
+
+  function handleOopDragOver(event) {
+    event.preventDefault();
+    if (event.currentTarget) event.currentTarget.classList.add('oop-court-drop-active');
+  }
+
+  function handleOopDragLeave(event) {
+    if (event.currentTarget) event.currentTarget.classList.remove('oop-court-drop-active');
+  }
+
+  function handleOopDrop(event, targetCourtKey) {
+    event.preventDefault();
+    if (event.currentTarget) event.currentTarget.classList.remove('oop-court-drop-active');
+    const key = opsUi.oopDragKey || (event.dataTransfer && event.dataTransfer.getData('text/plain'));
+    handleOopDragEnd();
+    if (key) moveOopMatchToCourt(key, targetCourtKey);
+  }
+
+  // 試合と試合の間の挿入スロット用ハンドラ
+  function handleOopInsertZoneClick(targetCourtKey, insertIndex) {
+    if (!opsUi.oopSelectedMoveKey) return;
+    moveOopMatchToCourt(opsUi.oopSelectedMoveKey, targetCourtKey, insertIndex);
+  }
+
+  function handleOopInsertDragOver(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.currentTarget) event.currentTarget.classList.add('oop-insert-hover');
+  }
+
+  function handleOopInsertDragLeave(event) {
+    if (event.currentTarget) event.currentTarget.classList.remove('oop-insert-hover');
+  }
+
+  function handleOopInsertDrop(event, targetCourtKey, insertIndex) {
+    event.preventDefault();
+    event.stopPropagation();
+    const key = opsUi.oopDragKey || (event.dataTransfer && event.dataTransfer.getData('text/plain'));
+    handleOopDragEnd();
+    if (key) moveOopMatchToCourt(key, targetCourtKey, insertIndex);
+  }
+
+  // カード本体上にドロップされた場合も左半分なら前・右半分なら後ろへ正確に挿入
+  function handleOopCardDragOver(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const el = event.currentTarget;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const isLeft = event.clientX < rect.left + rect.width / 2;
+    el.classList.toggle('oop-drop-left', isLeft);
+    el.classList.toggle('oop-drop-right', !isLeft);
+  }
+
+  function handleOopCardDragLeave(event) {
+    const el = event.currentTarget;
+    if (el) el.classList.remove('oop-drop-left', 'oop-drop-right');
+  }
+
+  function handleOopCardDrop(event, targetCourtKey, cardIndex) {
+    event.preventDefault();
+    event.stopPropagation();
+    const el = event.currentTarget;
+    let insertIdx = cardIndex;
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      insertIdx = (event.clientX < rect.left + rect.width / 2) ? cardIndex : cardIndex + 1;
+    }
+    const key = opsUi.oopDragKey || (event.dataTransfer && event.dataTransfer.getData('text/plain'));
+    handleOopDragEnd();
+    if (key) moveOopMatchToCourt(key, targetCourtKey, insertIdx);
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && opsUi.oopSelectedMoveKey) {
+      cancelOopMoveSelection();
+    }
+  });
+
+  function autoAssignUnassignedMatches() {
+    const { unassigned } = syncOopWithBracket();
+    if (unassigned.length === 0) {
+      showToast('未割当の試合はありません', 'info');
+      return;
+    }
+    const nCourts = state.oop.courtCount || 4;
+    unassigned.forEach((mKey) => {
+      let best = '1';
+      for (let c = 2; c <= nCourts; c++) {
+        if ((state.oop.courts[String(c)] || []).length < (state.oop.courts[best] || []).length) {
+          best = String(c);
+        }
+      }
+      state.oop.courts[best].push(mKey);
+    });
+    state.oop.updatedAt = new Date().toISOString();
+    saveToLocalStorage();
+    renderOopView();
+    showToast(`未割当${unassigned.length}試合を空きコートへ投入しました`, 'success');
+  }
+
+  // 審判メモ編集モーダル
+  function openUmpireModal(matchKey) {
+    const catalog = getActiveMatchCatalog('full');
+    const m = catalog.matchMap[matchKey];
+    if (!m) return;
+    opsUi.umpireModalMatchKey = matchKey;
+    document.getElementById('umpire-modal-match-label').textContent = `${m.matchNo}（${m.roundLabel}）：${m.p1Label} vs ${m.p2Label}`;
+    document.getElementById('umpire-modal-input').value = (state.oop.umpires && state.oop.umpires[matchKey]) || '';
+    document.getElementById('umpire-modal').classList.remove('hidden');
+    setTimeout(() => document.getElementById('umpire-modal-input').focus(), 40);
+  }
+
+  function closeUmpireModal() {
+    const m = document.getElementById('umpire-modal');
+    if (m) m.classList.add('hidden');
+    opsUi.umpireModalMatchKey = null;
+  }
+
+  function saveUmpireOverride() {
+    const key = opsUi.umpireModalMatchKey;
+    if (!key) return;
+    const val = String(document.getElementById('umpire-modal-input').value || '').trim();
+    if (!state.oop.umpires) state.oop.umpires = {};
+    if (val) state.oop.umpires[key] = val;
+    else delete state.oop.umpires[key];
+    saveToLocalStorage();
+    closeUmpireModal();
+    renderOopView();
+  }
+
+  function clearUmpireOverride() {
+    const key = opsUi.umpireModalMatchKey;
+    if (!key) return;
+    if (state.oop.umpires) delete state.oop.umpires[key];
+    saveToLocalStorage();
+    closeUmpireModal();
+    renderOopView();
+  }
+
+  // 進行表 印刷・PDF・Excel 出力
+  function printOopSheet() {
+    const { catalog } = syncOopWithBracket();
+    renderOopPrintSheet(catalog);
+    const cleanup = () => {
+      document.body.classList.remove('printing-oop');
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    document.body.classList.add('printing-oop');
+    setTimeout(() => window.print(), 120);
+  }
+
+  async function exportOopPdf() {
+    if (typeof html2canvas === 'undefined' || typeof jspdf === 'undefined') {
+      alert('PDF出力ライブラリの読み込みが完了していません。印刷メニューの「PDFに保存」をご利用ください。');
+      return;
+    }
+    const prevStyle = state.oop.viewStyle;
+    const { catalog } = syncOopWithBracket();
+    state.oop.viewStyle = 'table';
+    renderOopView();
+    renderOopPrintSheet(catalog);
+
+    const sheet = document.getElementById('oop-print-sheet');
+    if (!sheet) return;
+    showToast('進行表PDFを作成しています...', 'info', 2200);
+    try {
+      if (document.fonts && document.fonts.ready) await document.fonts.ready;
+      document.body.classList.add('oop-pdf-capturing');
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const canvas = await html2canvas(sheet, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        logging: false
+      });
+      const { jsPDF } = jspdf;
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      const pageW = pdf.internal.pageSize.getWidth();
+      const pageH = pdf.internal.pageSize.getHeight();
+      const margin = 8;
+      const availW = pageW - margin * 2;
+      const availH = pageH - margin * 2;
+      const ratio = Math.min(availW / canvas.width, availH / canvas.height);
+      const drawW = canvas.width * ratio;
+      const drawH = canvas.height * ratio;
+      const x = (pageW - drawW) / 2;
+      pdf.addImage(canvas.toDataURL('image/png'), 'PNG', x, margin, drawW, drawH, undefined, 'FAST');
+
+      const ev = getActiveEvent();
+      const safeName = `${(opsUi.bundle && opsUi.bundle.name) || '大会'}_${(ev && ev.name) || '進行表'}_進行表`.replace(/[\\/:*?"<>|]/g, '_');
+      pdf.save(`${safeName}_${new Date().toISOString().slice(0, 10)}.pdf`);
+      showToast('進行表PDFを保存しました', 'success');
+    } catch (err) {
+      alert('進行表PDFの作成中にエラーが発生しました: ' + err.message);
+    } finally {
+      document.body.classList.remove('oop-pdf-capturing');
+      state.oop.viewStyle = prevStyle;
+      renderOopView();
+    }
+  }
+
+  function exportOopExcel() {
+    if (typeof XLSX === 'undefined') {
+      alert('Excel出力ライブラリが読み込まれていません。');
+      return;
+    }
+    try {
+      const { catalog } = syncOopWithBracket();
+      const nCourts = state.oop.courtCount || 4;
+      const formatter = (entry) => OopEngine.formatSpectatorPairName(entry, 'full', formatSchoolShortName);
+      const wb = XLSX.utils.book_new();
+
+      // Sheet 1: コート別進行表マトリクス
+      let maxRows = 0;
+      for (let c = 1; c <= nCourts; c++) {
+        maxRows = Math.max(maxRows, (state.oop.courts[String(c)] || []).length);
+      }
+      const header = ['試合順'];
+      for (let c = 1; c <= nCourts; c++) header.push(`コート${c}`);
+      const matrix = [header];
+      for (let r = 0; r < maxRows; r++) {
+        const row = [`第${r + 1}試合`];
+        for (let c = 1; c <= nCourts; c++) {
+          const cKeys = state.oop.courts[String(c)] || [];
+          const mKey = cKeys[r];
+          const m = mKey ? catalog.matchMap[mKey] : null;
+          if (!m) {
+            row.push('');
+          } else {
+            const ump = OopEngine.getUmpireLabel(cKeys, r, catalog.matchMap, state.oop, formatter);
+            const score = m.result ? ` [${m.result.g1}-${m.result.g2}]` : '';
+            row.push(`${m.matchNo}(${m.roundLabel})${score}\n${m.p1Label} vs ${m.p2Label}${ump.text ? `\n審判: ${ump.text}` : ''}`);
+          }
+        }
+        matrix.push(row);
+      }
+      const ws1 = XLSX.utils.aoa_to_sheet(matrix);
+      ws1['!cols'] = [{ wch: 10 }, ...Array.from({ length: nCourts }, () => ({ wch: 30 }))];
+      XLSX.utils.book_append_sheet(wb, ws1, 'コート別進行表');
+
+      // Sheet 2: 全試合一覧
+      const statusJa = { waiting: '待機', calling: 'コール中', playing: '試合中', finished: '終了', wo: '棄権(WO)' };
+      const listRows = [['コート', 'コート順', '試合番号', 'ラウンド', '山', 'ペア1', 'ペア2', '審判', 'ステータス', 'スコア']];
+      for (let c = 1; c <= nCourts; c++) {
+        const cKeys = state.oop.courts[String(c)] || [];
+        cKeys.forEach((mKey, idx) => {
+          const m = catalog.matchMap[mKey];
+          if (!m) return;
+          const ump = OopEngine.getUmpireLabel(cKeys, idx, catalog.matchMap, state.oop, formatter);
+          const st = state.oop.statuses[mKey] || 'waiting';
+          listRows.push([
+            `コート${c}`,
+            idx + 1,
+            m.matchNo,
+            m.roundLabel,
+            m.mountain,
+            m.p1Label,
+            m.p2Label,
+            ump.text || '',
+            statusJa[st] || st,
+            m.result ? `${m.result.g1}-${m.result.g2}` : ''
+          ]);
+        });
+      }
+      const ws2 = XLSX.utils.aoa_to_sheet(listRows);
+      ws2['!cols'] = [
+        { wch: 10 }, { wch: 9 }, { wch: 10 }, { wch: 12 }, { wch: 8 },
+        { wch: 24 }, { wch: 24 }, { wch: 22 }, { wch: 10 }, { wch: 10 }
+      ];
+      XLSX.utils.book_append_sheet(wb, ws2, '全試合一覧');
+
+      const ev = getActiveEvent();
+      const safeName = `${(opsUi.bundle && opsUi.bundle.name) || '大会'}_${(ev && ev.name) || '進行表'}_進行表`.replace(/[\\/:*?"<>|]/g, '_');
+      XLSX.writeFile(wb, `${safeName}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      showToast('進行表Excelを保存しました', 'success');
+    } catch (err) {
+      alert('進行表Excelの保存に失敗しました: ' + err.message);
+    }
+  }
+
+  // =========================================================================
+  // 4. 公開設定・QRコード・会場スタッフPIN モーダル
+  // =========================================================================
+  function getPortalPreviewUrl() {
+    const base = `${window.location.origin}${window.location.pathname}`;
+    const tid = (opsUi.bundle && opsUi.bundle.id) || 'demo';
+    return `${base}#public?t=${encodeURIComponent(tid)}`;
+  }
+
+  function updatePublishIndicator() {
+    if (!opsUi.bundle || !opsUi.bundle.publish) return;
+    const dot = document.getElementById('header-publish-dot');
+    if (dot) {
+      dot.className = opsUi.bundle.publish.enabled
+        ? 'w-1.5 h-1.5 rounded-full bg-emerald-400'
+        : 'w-1.5 h-1.5 rounded-full bg-slate-500';
+    }
+  }
+
+  function renderPublishModalContents() {
+    if (!opsUi.bundle) return;
+    const pub = opsUi.bundle.publish;
+    const chk = document.getElementById('pub-enabled-checkbox');
+    const txt = document.getElementById('pub-enabled-text');
+    const passInput = document.getElementById('pub-passcode-input');
+    if (chk) chk.checked = Boolean(pub.enabled);
+    if (txt) {
+      txt.textContent = pub.enabled ? '公開中' : '非公開';
+      txt.className = pub.enabled ? 'ml-1.5 text-xs font-bold text-emerald-700' : 'ml-1.5 text-xs font-bold text-slate-500';
+    }
+    if (passInput && document.activeElement !== passInput) passInput.value = pub.passcode || '';
+    document.querySelectorAll('input[name="pub-name-mode"]').forEach((r) => {
+      r.checked = (r.value === (pub.nameDisplayMode || 'full'));
+    });
+
+    // 種目別スタッフPIN一覧
+    const pinsEl = document.getElementById('pub-staff-pins-list');
+    if (pinsEl) {
+      pinsEl.innerHTML = opsUi.bundle.events.map((ev) => `
+        <div class="flex items-center justify-between gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-amber-200 text-[11px]">
+          <div class="min-w-0">
+            <div class="font-bold text-slate-900 truncate">${escapeHtml(ev.name)} <span class="text-[10px] text-slate-500 font-normal">(${escapeHtml(ev.venue || '第1会場')})</span></div>
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <span class="font-mono font-extrabold text-amber-900 bg-amber-100 px-2 py-0.5 rounded tracking-widest">${escapeHtml(ev.staffPin || '0000')}</span>
+            <button onclick="copyStaffPin('${escapeJs(ev.id)}')" class="px-1.5 py-0.5 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 rounded text-slate-700">コピー</button>
+            <button onclick="regenerateStaffPin('${escapeJs(ev.id)}')" class="px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 hover:bg-amber-200 rounded text-amber-900">再発行</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // URL ＆ QRコード生成
+    const urlStr = getPortalPreviewUrl();
+    const urlInput = document.getElementById('pub-portal-url-input');
+    if (urlInput) urlInput.value = urlStr;
+    const qrBox = document.getElementById('pub-qr-box');
+    if (qrBox) {
+      if (typeof qrcode === 'function') {
+        try {
+          const qr = qrcode(0, 'M');
+          qr.addData(urlStr);
+          qr.make();
+          qrBox.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2 });
+          const svg = qrBox.querySelector('svg');
+          if (svg) {
+            svg.setAttribute('width', '152');
+            svg.setAttribute('height', '152');
+          }
+        } catch (_) {
+          qrBox.innerHTML = `<div class="text-[11px] text-slate-400 p-4">QR生成に失敗しました</div>`;
+        }
+      } else {
+        qrBox.innerHTML = `<div class="text-[11px] text-slate-500 p-3">オフライン環境のためQRは<br/>オンライン接続時に自動生成されます</div>`;
+      }
+    }
+  }
+
+  function openPublishModal() {
+    const curEv = getActiveEvent();
+    if (curEv) curEv.data = captureActiveStateSnapshot();
+    renderPublishModalContents();
+    document.getElementById('publish-modal').classList.remove('hidden');
+  }
+
+  function closePublishModal() {
+    document.getElementById('publish-modal').classList.add('hidden');
+  }
+
+  function updatePublishSettingsFromModal() {
+    if (!opsUi.bundle) return;
+    const enabled = Boolean(document.getElementById('pub-enabled-checkbox').checked);
+    const passcode = String(document.getElementById('pub-passcode-input').value || '').trim();
+    const checkedRadio = document.querySelector('input[name="pub-name-mode"]:checked');
+    const nameDisplayMode = checkedRadio ? checkedRadio.value : 'full';
+    opsUi.bundle.publish = { enabled, passcode, nameDisplayMode };
+    saveBundleToLocalStorage();
+    updatePublishIndicator();
+    renderPublishModalContents();
+    if (state.mainView === 'spectator') renderSpectatorView();
+  }
+
+  function copyPortalUrl() {
+    const url = getPortalPreviewUrl();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(() => showToast('公開ポータルURLをコピーしました', 'success'));
+    } else {
+      const inp = document.getElementById('pub-portal-url-input');
+      if (inp) { inp.select(); document.execCommand('copy'); }
+      showToast('公開ポータルURLをコピーしました', 'success');
+    }
+  }
+
+  function copyStaffPin(eventId) {
+    const ev = opsUi.bundle && opsUi.bundle.events.find((e) => e.id === eventId);
+    if (!ev) return;
+    const text = `${opsUi.bundle.name} / ${ev.name}（${ev.venue}） 運営スタッフPIN: ${ev.staffPin}`;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => showToast(`${ev.name}のスタッフPINをコピーしました`, 'success'));
+    } else {
+      showToast(`PIN: ${ev.staffPin}`, 'info');
+    }
+  }
+
+  function regenerateStaffPin(eventId) {
+    const ev = opsUi.bundle && opsUi.bundle.events.find((e) => e.id === eventId);
+    if (!ev) return;
+    ev.staffPin = generateStaffPin();
+    saveBundleToLocalStorage();
+    renderPublishModalContents();
+    showToast(`${ev.name}のスタッフPINを再発行しました`, 'success');
+  }
+
+  // =========================================================================
+  // 5. 生徒・保護者向け 公開ビュー（スマホ最適化3タブ）
+  // =========================================================================
+  function getSpectatorEvent() {
+    if (!opsUi.bundle || !opsUi.bundle.events.length) return null;
+    const activeEv = getActiveEvent();
+    if (activeEv) activeEv.data = captureActiveStateSnapshot();
+    const target = opsUi.bundle.events.find((ev) => ev.id === opsUi.spectator.eventId) || activeEv;
+    opsUi.spectator.eventId = target.id;
+    return target;
+  }
+
+  function setSpectatorFrameMode(mode) {
+    opsUi.spectator.frameMode = mode === 'full' ? 'full' : 'mobile';
+    const frame = document.getElementById('spectator-portal-frame');
+    const btnM = document.getElementById('btn-spec-frame-mobile');
+    const btnF = document.getElementById('btn-spec-frame-full');
+    if (frame) {
+      frame.className = opsUi.spectator.frameMode === 'full'
+        ? 'w-full max-w-6xl min-h-[720px] bg-slate-50 text-slate-900 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden flex flex-col'
+        : 'w-full max-w-[400px] min-h-[720px] bg-slate-50 text-slate-900 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden flex flex-col';
+    }
+    if (btnM && btnF) {
+      const on = 'px-2 py-0.5 text-[11px] font-bold rounded bg-blue-600 text-white';
+      const off = 'px-2 py-0.5 text-[11px] font-bold rounded text-slate-300 hover:text-white';
+      btnM.className = opsUi.spectator.frameMode === 'mobile' ? on : off;
+      btnF.className = opsUi.spectator.frameMode === 'full' ? on : off;
+    }
+  }
+
+  function setSpectatorTab(tab) {
+    opsUi.spectator.tab = tab;
+    renderSpectatorView();
+  }
+
+  function selectSpectatorEvent(eventId) {
+    opsUi.spectator.eventId = eventId;
+    opsUi.spectator.schoolFilter = 'ALL';
+    renderSpectatorView();
+  }
+
+  function submitSpectatorPasscode() {
+    const inp = document.getElementById('spec-passcode-try');
+    const val = inp ? String(inp.value || '').trim() : '';
+    const expected = (opsUi.bundle && opsUi.bundle.publish && opsUi.bundle.publish.passcode) || '';
+    if (val === expected) {
+      opsUi.spectator.unlockedPasscode = val;
+      renderSpectatorView();
+    } else {
+      showToast('パスコードが一致しません', 'error');
+    }
+  }
+
+  function bypassSpectatorGate(kind) {
+    if (kind === 'closed') opsUi.spectator.organizerBypassClosed = true;
+    if (kind === 'passcode') opsUi.spectator.unlockedPasscode = (opsUi.bundle && opsUi.bundle.publish && opsUi.bundle.publish.passcode) || '';
+    renderSpectatorView();
+  }
+
+  function toggleSpectatorFavorite(favId) {
+    if (opsUi.spectator.favorites.has(favId)) opsUi.spectator.favorites.delete(favId);
+    else opsUi.spectator.favorites.add(favId);
+    saveSpectatorFavorites();
+    renderSpectatorView();
+  }
+
+  function setSpectatorSearchQuery(q) {
+    opsUi.spectator.searchQuery = String(q || '');
+    renderSpectatorView();
+    const inp = document.getElementById('spec-search-input');
+    if (inp) {
+      inp.focus();
+      inp.setSelectionRange(inp.value.length, inp.value.length);
+    }
+  }
+
+  function setSpectatorSchoolFilter(school) {
+    opsUi.spectator.schoolFilter = school;
+    renderSpectatorView();
+  }
+
+  function adjustSpectatorBracketZoom(delta) {
+    opsUi.spectator.bracketZoom = Math.max(0.45, Math.min(1.4, Math.round((opsUi.spectator.bracketZoom + delta) * 100) / 100));
+    renderSpectatorView();
+  }
+
+  function renderSpectatorView() {
+    const frame = document.getElementById('spectator-portal-frame');
+    if (!frame || !opsUi.bundle) return;
+
+    const pub = opsUi.bundle.publish || { enabled: true, passcode: '', nameDisplayMode: 'full' };
+    const summaryEl = document.getElementById('spectator-privacy-summary');
+    if (summaryEl) {
+      summaryEl.textContent = `公開: ${pub.enabled ? 'ON' : 'OFF'} / パスコード: ${pub.passcode ? 'あり' : 'なし'} / 氏名: ${pub.nameDisplayMode === 'surname' ? '名字のみ' : 'フルネーム'}`;
+    }
+
+    // 非公開ゲート
+    if (!pub.enabled && !opsUi.spectator.organizerBypassClosed) {
+      frame.innerHTML = `
+        <div class="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4 bg-white">
+          <div class="w-12 h-12 rounded-2xl bg-slate-100 text-slate-500 flex items-center justify-center text-xl">🔒</div>
+          <div class="space-y-1">
+            <h3 class="text-base font-extrabold text-slate-900">${escapeHtml(opsUi.bundle.name)}</h3>
+            <p class="text-xs text-slate-500">現在、この大会の公開ページは非公開に設定されています。</p>
+          </div>
+          <button onclick="bypassSpectatorGate('closed')"
+                  class="px-4 py-2 text-xs font-bold bg-slate-900 text-white rounded-lg">管理者プレビューで中を見る</button>
+        </div>
+      `;
+      return;
+    }
+
+    // パスコードゲート
+    if (pub.passcode && opsUi.spectator.unlockedPasscode !== pub.passcode) {
+      frame.innerHTML = `
+        <div class="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4 bg-white">
+          <div class="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center text-xl">🔑</div>
+          <div class="space-y-1">
+            <div class="text-[10px] font-bold text-emerald-700">生徒・保護者向け 大会ポータル</div>
+            <h3 class="text-base font-extrabold text-slate-900">${escapeHtml(opsUi.bundle.name)}</h3>
+            <p class="text-xs text-slate-500">閲覧パスコード（合言葉）を入力してください</p>
+          </div>
+          <div class="w-full max-w-xs space-y-2">
+            <input type="password" id="spec-passcode-try" placeholder="パスコードを入力"
+                   onkeydown="if(event.key==='Enter') submitSpectatorPasscode()"
+                   class="w-full px-3 py-2 text-sm font-bold text-center border border-slate-300 rounded-lg focus:outline-none focus:border-emerald-500" />
+            <button onclick="submitSpectatorPasscode()" class="w-full py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg">閲覧する</button>
+            <button onclick="bypassSpectatorGate('passcode')" class="w-full py-1.5 text-[11px] font-bold text-slate-500 hover:text-slate-800">管理者プレビューで解除</button>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    const ev = getSpectatorEvent();
+    if (!ev || !ev.data) return;
+    const evData = ev.data;
+    const aliases = evData.schoolAliases || {};
+    const shortSchool = (raw) => {
+      const k = String(raw || '').trim();
+      if (Object.prototype.hasOwnProperty.call(aliases, k) && String(aliases[k] || '').trim()) return String(aliases[k]).trim();
+      return formatSchoolShortName(k);
+    };
+    const nameMode = pub.nameDisplayMode || 'full';
+    const pairFmt = (entry) => OopEngine.formatSpectatorPairName(entry, nameMode, shortSchool);
+
+    const catalog = OopEngine.buildMatchCatalog({
+      bracketSize: evData.bracketSize || 16,
+      slots: evData.slots || [],
+      activeSlotMask: evData.activeSlotMask || [],
+      results: evData.results || {},
+      consolation: evData.consolation || null,
+      labelFormatter: pairFmt
+    });
+    const reconciled = OopEngine.reconcileOopState(evData.oop, catalog);
+    const oop = reconciled.oop;
+
+    const tab = opsUi.spectator.tab;
+    let bodyHtml = '';
+    if (tab === 'courts') {
+      bodyHtml = renderSpectatorCourtsTab(catalog, oop, pairFmt);
+    } else if (tab === 'bracket') {
+      bodyHtml = renderSpectatorBracketTab(evData, catalog, nameMode, shortSchool);
+    } else {
+      bodyHtml = renderSpectatorSearchTab(ev, evData, catalog, oop, nameMode, shortSchool, pairFmt);
+    }
+
+    frame.innerHTML = `
+      <!-- ポータルヘッダー -->
+      <div class="bg-slate-900 text-white px-4 py-3 space-y-2 shrink-0">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <div class="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 live-dot"></span>
+              <span>LIVE 速報ポータル</span>
+              ${nameMode === 'surname' ? `<span class="px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 border border-slate-700">名字表示</span>` : ''}
+            </div>
+            <h2 class="text-sm font-extrabold leading-tight truncate mt-0.5">${escapeHtml(opsUi.bundle.name)}</h2>
+          </div>
+          <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 shrink-0">${escapeHtml(oop.venue || ev.venue || '第1会場')}</span>
+        </div>
+
+        <!-- 種目切替ピル -->
+        <div class="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+          ${opsUi.bundle.events.map((item) => {
+            const act = item.id === ev.id;
+            return `<button onclick="selectSpectatorEvent('${escapeJs(item.id)}')"
+                            class="px-2.5 py-1 text-[11px] font-bold rounded-full shrink-0 transition ${act ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}">
+                      ${escapeHtml(item.name)}
+                    </button>`;
+          }).join('')}
+        </div>
+      </div>
+
+      <!-- 3タブナビゲーション -->
+      <div class="bg-white border-b border-slate-200 grid grid-cols-3 shrink-0">
+        <button onclick="setSpectatorTab('courts')"
+                class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'courts' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500 hover:text-slate-800'}">
+          コート状況
+        </button>
+        <button onclick="setSpectatorTab('bracket')"
+                class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'bracket' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500 hover:text-slate-800'}">
+          トーナメント表
+        </button>
+        <button onclick="setSpectatorTab('search')"
+                class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'search' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500 hover:text-slate-800'}">
+          選手・学校検索
+        </button>
+      </div>
+
+      <!-- タブ本体 -->
+      <div class="flex-1 overflow-auto p-3 space-y-3 bg-slate-50">
+        ${bodyHtml}
+      </div>
+    `;
+  }
+
+  function renderSpectatorCourtsTab(catalog, oop, pairFmt) {
+    const nCourts = oop.courtCount || 4;
+    let playing = 0;
+    let calling = 0;
+    let finished = 0;
+    catalog.matches.forEach((m) => {
+      const st = oop.statuses[m.key] || 'waiting';
+      if (st === 'playing') playing++;
+      else if (st === 'calling') calling++;
+      else if (st === 'finished' || st === 'wo') finished++;
+    });
+
+    let cardsHtml = '';
+    for (let c = 1; c <= nCourts; c++) {
+      const cKey = String(c);
+      const courtKeys = oop.courts[cKey] || [];
+      const live = OopEngine.getCourtLiveSlots(courtKeys, catalog.matchMap, oop.statuses);
+
+      let statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">待機中</span>`;
+      if (live.current && live.current.status === 'playing') {
+        statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white">試合中</span>`;
+      } else if (live.current && live.current.status === 'calling') {
+        statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-white">コール中</span>`;
+      } else if (live.finished.length === courtKeys.length && courtKeys.length > 0) {
+        statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">全試合終了</span>`;
+      }
+
+      const renderLiveBox = (slotItem, title, tone) => {
+        if (!slotItem) return '';
+        const m = slotItem.match;
+        const ump = OopEngine.getUmpireLabel(courtKeys, slotItem.indexInCourt, catalog.matchMap, oop, pairFmt);
+        return `
+          <div class="p-2.5 rounded-lg border ${tone} space-y-1">
+            <div class="flex items-center justify-between text-[10px] font-bold">
+              <span>${title} ・ ${escapeHtml(m.matchNo)}（${escapeHtml(m.roundLabel)}）</span>
+            </div>
+            <div class="text-xs font-extrabold text-slate-900 leading-snug">${escapeHtml(m.p1Label)}</div>
+            <div class="text-[10px] font-bold text-slate-400">vs</div>
+            <div class="text-xs font-extrabold text-slate-900 leading-snug">${escapeHtml(m.p2Label)}</div>
+            ${ump.text ? `<div class="text-[10px] text-slate-600 pt-0.5 border-t border-slate-200/70">審判: ${escapeHtml(ump.text)}</div>` : ''}
+          </div>
+        `;
+      };
+
+      const renderCompactRow = (slotItem, tag) => {
+        if (!slotItem) return '';
+        const m = slotItem.match;
+        return `
+          <div class="flex items-start gap-2 text-[11px] py-1 border-t border-slate-100">
+            <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-bold text-[9px] shrink-0 mt-0.5">${tag}</span>
+            <div class="min-w-0 flex-1 leading-snug">
+              <span class="font-bold text-slate-500 mr-1">${escapeHtml(m.matchNo)}</span>
+              <span class="font-bold text-slate-800">${escapeHtml(m.p1Label)}</span>
+              <span class="text-slate-400 mx-1">vs</span>
+              <span class="font-bold text-slate-800">${escapeHtml(m.p2Label)}</span>
+            </div>
+          </div>
+        `;
+      };
+
+      cardsHtml += `
+        <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-extrabold text-slate-900">コート ${c}</span>
+            <div class="flex items-center gap-2">
+              <span class="text-[10px] text-slate-400 font-bold">${live.finished.length}/${courtKeys.length}完了</span>
+              ${statusBadge}
+            </div>
+          </div>
+          ${live.current
+            ? renderLiveBox(live.current, live.current.status === 'playing' ? '現在 試合中' : 'コートへ集合（コール中）', live.current.status === 'playing' ? 'bg-rose-50/80 border-rose-300 text-rose-800' : 'bg-amber-50/80 border-amber-300 text-amber-800')
+            : (live.next ? renderLiveBox(live.next, '次の試合予定', 'bg-blue-50/60 border-blue-200 text-blue-800') : `<div class="text-xs text-slate-400 py-2 text-center">予定されている試合はありません</div>`)}
+          ${live.current ? renderCompactRow(live.next, '次試合') : ''}
+          ${renderCompactRow(live.current ? live.onDeck : live.upcoming[1], '次々試合')}
+        </div>
+      `;
+    }
+
+    return `
+      <div class="grid grid-cols-3 gap-2 text-center">
+        <div class="bg-white rounded-lg border border-slate-200 p-2">
+          <div class="text-[10px] font-bold text-slate-500">試合中</div>
+          <div class="text-base font-extrabold text-rose-600">${playing}<span class="text-[10px] text-slate-400 ml-0.5">面</span></div>
+        </div>
+        <div class="bg-white rounded-lg border border-slate-200 p-2">
+          <div class="text-[10px] font-bold text-slate-500">コール中</div>
+          <div class="text-base font-extrabold text-amber-600">${calling}<span class="text-[10px] text-slate-400 ml-0.5">面</span></div>
+        </div>
+        <div class="bg-white rounded-lg border border-slate-200 p-2">
+          <div class="text-[10px] font-bold text-slate-500">終了</div>
+          <div class="text-base font-extrabold text-emerald-600">${finished}<span class="text-[10px] text-slate-400 ml-0.5">/${catalog.matches.length}</span></div>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 ${opsUi.spectator.frameMode === 'full' ? 'md:grid-cols-2 lg:grid-cols-3' : ''} gap-2.5">
+        ${cardsHtml}
+      </div>
+    `;
+  }
+
+  function renderSpectatorBracketTab(evData, catalog, nameMode, shortSchool) {
+    const size = evData.bracketSize || 16;
+    const totalRounds = Math.round(Math.log2(size));
+    const tree = catalog.tree;
+    const rowH = size >= 64 ? 26 : 30;
+    const labelW = 210;
+    const stepW = Math.max(24, Math.min(38, Math.floor(170 / Math.max(1, totalRounds))));
+    const totalW = labelW + totalRounds * stepW + 130;
+    const totalH = size * rowH + 24;
+
+    const nodeY = [];
+    nodeY[0] = [];
+    for (let i = 0; i < size; i++) nodeY[0][i] = i * rowH + rowH / 2 + 10;
+    for (let r = 1; r <= totalRounds; r++) {
+      const count = size / Math.pow(2, r);
+      nodeY[r] = [];
+      for (let m = 0; m < count; m++) {
+        const node = tree[r][m];
+        if (!node.active) nodeY[r][m] = (nodeY[r - 1][m * 2] + nodeY[r - 1][m * 2 + 1]) / 2;
+        else if (node.isBye) nodeY[r][m] = node.c0.active ? nodeY[r - 1][m * 2] : nodeY[r - 1][m * 2 + 1];
+        else nodeY[r][m] = (nodeY[r - 1][m * 2] + nodeY[r - 1][m * 2 + 1]) / 2;
+      }
+    }
+
+    const effX = (node, round) => {
+      if (round === 0) return labelW;
+      if (node.isBye) return effX(node.c0.active ? node.c0 : node.c1, round - 1);
+      return labelW + round * stepW;
+    };
+    const reachedByWin = (node) => {
+      if (!node || !node.active) return false;
+      if (node.round === undefined) return false;
+      if (node.isBye) return reachedByWin(node.c0.active ? node.c0 : node.c1);
+      return Boolean(node.result);
+    };
+
+    let blackLines = '';
+    let redLines = '';
+    let scoresSvg = '';
+    let labelsHtml = '';
+    const pushLine = (x1, y1, x2, y2, isRed, w) => {
+      const line = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${isRed ? '#dc2626' : '#334155'}" stroke-width="${w || (isRed ? 2.4 : 1.3)}" stroke-linecap="square" />`;
+      if (isRed) redLines += line;
+      else blackLines += line;
+    };
+
+    let displayNo = 1;
+    for (let i = 0; i < size; i++) {
+      const leaf = tree[0][i];
+      if (!leaf.active) continue;
+      const y = nodeY[0][i];
+      const nameStr = leaf.entry ? OopEngine.formatSpectatorPairName(leaf.entry, nameMode, shortSchool) : '空き';
+      labelsHtml += `<div style="left:4px; top:${y - 11}px; width:${labelW - 10}px; height:22px;"
+                          class="absolute flex items-center gap-1.5 text-[11px] leading-snug">
+        <span class="w-5 text-right font-bold text-slate-400 shrink-0">${displayNo++}</span>
+        <span class="font-bold text-slate-900 truncate">${escapeHtml(nameStr)}</span>
+      </div>`;
+    }
+
+    for (let r = 1; r <= totalRounds; r++) {
+      const count = size / Math.pow(2, r);
+      const xCurr = labelW + r * stepW;
+      for (let m = 0; m < count; m++) {
+        const node = tree[r][m];
+        if (!node.active || node.isBye) continue;
+        const y0 = nodeY[r - 1][m * 2];
+        const y1 = nodeY[r - 1][m * 2 + 1];
+        const yMid = nodeY[r][m];
+        const x0 = effX(node.c0, r - 1);
+        const x1 = effX(node.c1, r - 1);
+        const res = node.result;
+        const w0 = Boolean(res && res.winner === 0);
+        const w1 = Boolean(res && res.winner === 1);
+        pushLine(x0, y0, xCurr, y0, w0 || reachedByWin(node.c0));
+        pushLine(xCurr, y0, xCurr, yMid, w0);
+        pushLine(x1, y1, xCurr, y1, w1 || reachedByWin(node.c1));
+        pushLine(xCurr, yMid, xCurr, y1, w1);
+        if (res) {
+          scoresSvg += `<text x="${xCurr - 7}" y="${y0 - 3}" text-anchor="middle" fill="#dc2626" font-size="10" font-weight="bold">${escapeHtml(res.g1)}</text>`;
+          scoresSvg += `<text x="${xCurr - 7}" y="${y1 + 10}" text-anchor="middle" fill="#dc2626" font-size="10" font-weight="bold">${escapeHtml(res.g2)}</text>`;
+        }
+      }
+    }
+
+    const finalNode = tree[totalRounds][0];
+    const finalX = labelW + totalRounds * stepW;
+    const finalY = nodeY[totalRounds][0];
+    pushLine(finalX, finalY, finalX + 20, finalY, Boolean(finalNode && finalNode.result));
+    if (finalNode && finalNode.entry) {
+      labelsHtml += `<div style="left:${finalX + 24}px; top:${finalY - 10}px;" class="absolute text-[11px] font-extrabold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded whitespace-nowrap">優勝: ${escapeHtml(OopEngine.formatSpectatorPairName(finalNode.entry, nameMode, shortSchool))}</div>`;
+    }
+
+    const z = opsUi.spectator.bracketZoom;
+    return `
+      <div class="flex items-center justify-between bg-white px-3 py-2 rounded-xl border border-slate-200">
+        <span class="text-[11px] font-bold text-slate-600">横スクロール＆拡大縮小できます</span>
+        <div class="flex items-center gap-1">
+          <button onclick="adjustSpectatorBracketZoom(-0.12)" class="w-6 h-6 rounded bg-slate-100 font-bold text-slate-700">-</button>
+          <span class="text-[11px] font-bold text-slate-700 w-10 text-center">${Math.round(z * 100)}%</span>
+          <button onclick="adjustSpectatorBracketZoom(0.12)" class="w-6 h-6 rounded bg-slate-100 font-bold text-slate-700">+</button>
+        </div>
+      </div>
+      <div class="bg-white rounded-xl border border-slate-200 p-3 overflow-auto shadow-sm" style="max-height:540px;">
+        <div style="width:${Math.ceil(totalW * z)}px; height:${Math.ceil(totalH * z)}px; position:relative;">
+          <div style="transform:scale(${z}); transform-origin:top left; width:${totalW}px; height:${totalH}px; position:relative;">
+            <svg width="${totalW}" height="${totalH}" class="absolute inset-0 pointer-events-none">${blackLines}${redLines}${scoresSvg}</svg>
+            ${labelsHtml}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderSpectatorSearchTab(ev, evData, catalog, oop, nameMode, shortSchool, pairFmt) {
+    const entries = Array.isArray(evData.entries) ? evData.entries : [];
+    const schools = Array.from(new Set(entries.map((e) => e.school).filter(Boolean)));
+    const q = opsUi.spectator.searchQuery.trim().toLowerCase();
+
+    // 各ペアのコート状況＆試合履歴を算出
+    const matchCourtMap = {};
+    Object.keys(oop.courts || {}).forEach((cKey) => {
+      (oop.courts[cKey] || []).forEach((mKey, idx) => {
+        matchCourtMap[mKey] = { court: cKey, order: idx + 1 };
+      });
+    });
+
+    const getEntryStatusAndMatches = (entry) => {
+      const related = catalog.matches.filter(
+        (m) => (m.p1Entry && m.p1Entry.id === entry.id) || (m.p2Entry && m.p2Entry.id === entry.id)
+      );
+      let badge = { text: '待機中', cls: 'bg-slate-100 text-slate-600' };
+      const activeMatch = related.find((m) => {
+        const st = oop.statuses[m.key];
+        return st === 'playing' || st === 'calling';
+      });
+      if (activeMatch) {
+        const st = oop.statuses[activeMatch.key];
+        const loc = matchCourtMap[activeMatch.key];
+        badge = st === 'playing'
+          ? { text: `コート${loc ? loc.court : '?'} 試合中`, cls: 'bg-rose-600 text-white' }
+          : { text: `コート${loc ? loc.court : '?'} コール中`, cls: 'bg-amber-500 text-white' };
+      } else {
+        const nextMatch = related.find((m) => !m.isFinished);
+        if (nextMatch) {
+          const loc = matchCourtMap[nextMatch.key];
+          badge = { text: `次: コート${loc ? loc.court : '?'} (${nextMatch.matchNo})`, cls: 'bg-blue-100 text-blue-800' };
+        } else if (related.length > 0) {
+          const last = related[related.length - 1];
+          const wonLast = last.winnerEntry && last.winnerEntry.id === entry.id;
+          badge = wonLast
+            ? { text: '勝ち上がり済', cls: 'bg-emerald-100 text-emerald-800' }
+            : { text: '試合終了', cls: 'bg-slate-200 text-slate-600' };
+        }
+      }
+      return { badge, related };
+    };
+
+    const makeFavKey = (entry) => `${ev.id}::${entry.id}`;
+
+    const renderEntryCard = (entry) => {
+      const favKey = makeFavKey(entry);
+      const isFav = opsUi.spectator.favorites.has(favKey);
+      const { badge, related } = getEntryStatusAndMatches(entry);
+      const dispName = pairFmt(entry);
+      return `
+        <div class="bg-white rounded-xl border ${isFav ? 'border-amber-300 ring-1 ring-amber-200' : 'border-slate-200'} p-2.5 space-y-1.5 shadow-sm">
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <div class="text-xs font-extrabold text-slate-900 leading-snug">${escapeHtml(dispName)}</div>
+              <div class="mt-1 inline-flex items-center gap-1.5">
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${badge.cls}">${escapeHtml(badge.text)}</span>
+              </div>
+            </div>
+            <button onclick="toggleSpectatorFavorite('${escapeJs(favKey)}')"
+                    class="px-2 py-1 rounded-lg text-sm leading-none transition ${isFav ? 'bg-amber-100 text-amber-500' : 'bg-slate-100 text-slate-400 hover:text-amber-500'}"
+                    title="お気に入り登録">
+              ${isFav ? '★' : '☆'}
+            </button>
+          </div>
+          ${related.length > 0 ? `
+            <div class="pt-1.5 border-t border-slate-100 space-y-1 text-[10px]">
+              ${related.map((m) => {
+                const loc = matchCourtMap[m.key];
+                const isP1 = m.p1Entry && m.p1Entry.id === entry.id;
+                const opp = isP1 ? m.p2Label : m.p1Label;
+                const resTxt = m.result ? `${m.result.g1}-${m.result.g2}` : (oop.statuses[m.key] === 'playing' ? '試合中' : '予定');
+                return `<div class="flex items-center justify-between gap-2 text-slate-600">
+                  <span class="truncate">${escapeHtml(m.roundLabel)} (コート${loc ? loc.court : '-'}) vs ${escapeHtml(opp)}</span>
+                  <span class="font-bold shrink-0 ${m.result ? 'text-rose-600' : 'text-slate-500'}">${escapeHtml(resTxt)}</span>
+                </div>`;
+              }).join('')}
+            </div>` : ''}
+        </div>
+      `;
+    };
+
+    const favEntries = entries.filter((e) => opsUi.spectator.favorites.has(makeFavKey(e)));
+    const filtered = entries.filter((e) => {
+      if (opsUi.spectator.schoolFilter !== 'ALL' && e.school !== opsUi.spectator.schoolFilter) return false;
+      if (!q) return true;
+      const hay = `${pairFmt(e)} ${e.school || ''}`.toLowerCase();
+      return hay.includes(q);
+    });
+
+    return `
+      <div class="space-y-2">
+        <input type="text" id="spec-search-input" value="${escapeHtml(opsUi.spectator.searchQuery)}"
+               oninput="setSpectatorSearchQuery(this.value)"
+               placeholder="選手名・学校名で検索..."
+               class="w-full px-3 py-2 text-xs font-bold bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-emerald-500 shadow-sm" />
+        <div class="flex items-center gap-1.5 overflow-x-auto pb-1">
+          <button onclick="setSpectatorSchoolFilter('ALL')"
+                  class="px-2.5 py-1 rounded-full text-[11px] font-bold shrink-0 ${opsUi.spectator.schoolFilter === 'ALL' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600'}">
+            すべて (${entries.length})
+          </button>
+          ${schools.map((sc) => `
+            <button onclick="setSpectatorSchoolFilter('${escapeJs(sc)}')"
+                    class="px-2.5 py-1 rounded-full text-[11px] font-bold shrink-0 ${opsUi.spectator.schoolFilter === sc ? 'bg-emerald-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}">
+              ${escapeHtml(shortSchool(sc))}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+
+      ${favEntries.length > 0 ? `
+        <div class="space-y-1.5">
+          <div class="text-[11px] font-extrabold text-amber-800 flex items-center gap-1">
+            <span>★ お気に入り登録（${favEntries.length}ペア）</span>
+          </div>
+          ${favEntries.map(renderEntryCard).join('')}
+        </div>` : ''}
+
+      <div class="space-y-1.5">
+        <div class="text-[11px] font-bold text-slate-500">出場ペア一覧（${filtered.length}組）</div>
+        ${filtered.length > 0 ? filtered.map(renderEntryCard).join('') : `<div class="text-center py-6 text-xs text-slate-400">一致するペアが見つかりません</div>`}
+      </div>
+    `;
+  }
+
+  // =========================================================================
+  // 6. app.js からのライフサイクルフック接続 ＆ グローバル公開
+  // =========================================================================
+  window.onAppStateSaved = function () {
+    if (opsUi.suppressBundleSync || !opsUi.bundle) return;
+    const ev = getActiveEvent();
+    if (ev) {
+      ev.data = captureActiveStateSnapshot();
+      ev.venue = (ev.data.oop && ev.data.oop.venue) || ev.venue;
+      saveBundleToLocalStorage();
+      renderEventSwitcherBar();
+      updateOopHeaderBadge();
+    }
+  };
+
+  window.onBracketResultsChanged = function () {
+    syncOopWithBracket();
+    saveToLocalStorage();
+    updateOopHeaderBadge();
+    if (state.mainView === 'oop') renderOopView();
+    if (state.mainView === 'spectator') renderSpectatorView();
+  };
+
+  window.onEnterOopView = function () {
+    renderOopView();
+  };
+
+  window.onEnterSpectatorView = function () {
+    opsUi.spectator.organizerBypassClosed = false;
+    renderSpectatorView();
+  };
+
+  // HTML onclick ハンドラ向けに公開
+  window.updateParentTournamentName = updateParentTournamentName;
+  window.switchActiveEvent = switchActiveEvent;
+  window.openEventModal = openEventModal;
+  window.closeEventModal = closeEventModal;
+  window.submitEventModal = submitEventModal;
+  window.duplicateActiveEvent = duplicateActiveEvent;
+  window.deleteActiveEvent = deleteActiveEvent;
+
+  window.exportBundleJsonState = exportBundleJsonState;
+  window.importBundleJsonState = importBundleJsonState;
+
+  window.updateOopVenue = updateOopVenue;
+  window.changeOopCourtCount = changeOopCourtCount;
+  window.setOopAssignMode = setOopAssignMode;
+  window.regenerateOopSchedule = regenerateOopSchedule;
+  window.toggleOopUmpireRule = toggleOopUmpireRule;
+  window.setOopViewStyle = setOopViewStyle;
+  window.toggleOopCourtFinished = toggleOopCourtFinished;
+  window.setOopMatchStatus = setOopMatchStatus;
+  window.openOopScoreInput = openOopScoreInput;
+  window.toggleOopWoChooser = toggleOopWoChooser;
+  window.recordOopWalkover = recordOopWalkover;
+  window.selectOopMatchForMove = selectOopMatchForMove;
+  window.cancelOopMoveSelection = cancelOopMoveSelection;
+  window.moveOopMatchToCourt = moveOopMatchToCourt;
+  window.toggleOopHideFinished = toggleOopHideFinished;
+  window.toggleOopQueueDrawer = toggleOopQueueDrawer;
+  window.reorderOopMatch = reorderOopMatch;
+  window.handleOopDragStart = handleOopDragStart;
+  window.handleOopDragEnd = handleOopDragEnd;
+  window.handleOopDragOver = handleOopDragOver;
+  window.handleOopDragLeave = handleOopDragLeave;
+  window.handleOopDrop = handleOopDrop;
+  window.handleOopInsertZoneClick = handleOopInsertZoneClick;
+  window.handleOopInsertDragOver = handleOopInsertDragOver;
+  window.handleOopInsertDragLeave = handleOopInsertDragLeave;
+  window.handleOopInsertDrop = handleOopInsertDrop;
+  window.handleOopCardDragOver = handleOopCardDragOver;
+  window.handleOopCardDragLeave = handleOopCardDragLeave;
+  window.handleOopCardDrop = handleOopCardDrop;
+  window.autoAssignUnassignedMatches = autoAssignUnassignedMatches;
+
+  window.openUmpireModal = openUmpireModal;
+  window.closeUmpireModal = closeUmpireModal;
+  window.saveUmpireOverride = saveUmpireOverride;
+  window.clearUmpireOverride = clearUmpireOverride;
+
+  window.printOopSheet = printOopSheet;
+  window.exportOopPdf = exportOopPdf;
+  window.exportOopExcel = exportOopExcel;
+
+  window.openPublishModal = openPublishModal;
+  window.closePublishModal = closePublishModal;
+  window.updatePublishSettingsFromModal = updatePublishSettingsFromModal;
+  window.copyPortalUrl = copyPortalUrl;
+  window.copyStaffPin = copyStaffPin;
+  window.regenerateStaffPin = regenerateStaffPin;
+
+  window.setSpectatorFrameMode = setSpectatorFrameMode;
+  window.setSpectatorTab = setSpectatorTab;
+  window.selectSpectatorEvent = selectSpectatorEvent;
+  window.submitSpectatorPasscode = submitSpectatorPasscode;
+  window.bypassSpectatorGate = bypassSpectatorGate;
+  window.toggleSpectatorFavorite = toggleSpectatorFavorite;
+  window.setSpectatorSearchQuery = setSpectatorSearchQuery;
+  window.setSpectatorSchoolFilter = setSpectatorSchoolFilter;
+  window.adjustSpectatorBracketZoom = adjustSpectatorBracketZoom;
+
+  // 初期化（app.js の init 完了後に実行）
+  initBundle();
+
+  // #public ハッシュ付きで開かれた場合は自動的に生徒・保護者ビューへ遷移
+  if (window.location.hash && window.location.hash.startsWith('#public')) {
+    switchMainView('spectator');
+  }
+})();

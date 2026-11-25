@@ -1,0 +1,387 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg-app: #f1f5f9;
+  --surface: #ffffff;
+  --ink-primary: #0f172a;
+  --ink-secondary: #475569;
+  --accent: #059669;
+  --accent-blue: #2563eb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Noto Sans JP', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', -apple-system, BlinkMacSystemFont, sans-serif;
+  background-color: var(--bg-app);
+  color: var(--ink-primary);
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* スクロールバー */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #e2e8f0;
+}
+::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* トーナメントシート本体 */
+.sheet-paper {
+  font-family: 'Noto Sans JP', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', sans-serif;
+  background: #ffffff;
+  box-shadow: 0 12px 32px -8px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.08);
+  transform-origin: top left;
+  transition: transform 0.12s ease-out;
+}
+
+/* 枠インタラクション状態 */
+.slot-card {
+  border-radius: 4px;
+  transition: background-color 0.12s ease, outline-color 0.12s ease;
+}
+.slot-card:hover {
+  background-color: rgba(37, 99, 235, 0.07);
+}
+
+.selected-slot {
+  background-color: rgba(37, 99, 235, 0.16) !important;
+  outline: 2px solid #2563eb !important;
+  z-index: 5;
+}
+
+.search-hit-slot {
+  background-color: rgba(14, 165, 233, 0.2) !important;
+  outline: 2px solid #0284c7 !important;
+}
+
+.search-current-slot {
+  background-color: rgba(245, 158, 11, 0.32) !important;
+  outline: 2.5px solid #d97706 !important;
+  z-index: 6;
+}
+
+/* 1回戦同校対決（赤） */
+.same-school-r1-alert {
+  background-color: rgba(239, 68, 68, 0.14) !important;
+  outline: 1.5px solid #ef4444 !important;
+}
+
+/* 1回戦同一カード3対戦以上（紫） */
+.triple-card-alert {
+  background-color: rgba(147, 51, 234, 0.12) !important;
+  outline: 1.5px solid #9333ea !important;
+}
+
+/* 上位4番手規則性ルール外（オレンジ） */
+.top4-rule-alert {
+  background-color: rgba(234, 88, 12, 0.13) !important;
+  outline: 1.5px solid #ea580c !important;
+}
+
+/* 2回戦同校接近（薄い黄破線） */
+.same-school-r2-alert {
+  background-color: rgba(245, 158, 11, 0.1) !important;
+  outline: 1.5px dashed #d97706 !important;
+}
+
+.empty-slot-placeholder {
+  background-color: rgba(248, 250, 252, 0.95);
+  outline: 1.5px dashed #94a3b8 !important;
+}
+
+.drag-over-target {
+  background-color: rgba(16, 185, 129, 0.22) !important;
+  outline: 2px dashed #059669 !important;
+  z-index: 8;
+}
+
+/* 任意の塗りつぶしカラー（印刷時も色再現） */
+.slot-custom-fill {
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+.fill-yellow { background-color: #fef08a !important; }
+.fill-sky    { background-color: #bae6fd !important; }
+.fill-green  { background-color: #bbf7d0 !important; }
+.fill-pink   { background-color: #fbcfe8 !important; }
+.fill-orange { background-color: #fed7aa !important; }
+.fill-purple { background-color: #e9d5ff !important; }
+.fill-gray   { background-color: #e2e8f0 !important; }
+
+/* 塗りつぶしモードのカーソル */
+body.paint-mode-active .slot-card {
+  cursor: crosshair !important;
+}
+
+/* PDF直接書き出しキャプチャ中の一時スタイル（印刷設定と完全同期） */
+body.pdf-capturing .no-print {
+  display: none !important;
+}
+body.pdf-capturing #tournament-sheet {
+  box-shadow: none !important;
+  transition: none !important;
+}
+body.pdf-capturing .slot-card,
+body.pdf-capturing .pair-name-wrap {
+  overflow: visible !important;
+  line-height: 1.4 !important;
+}
+body.pdf-capturing .slot-card span {
+  overflow: visible !important;
+  line-height: 1.35 !important;
+}
+body.pdf-capturing .selected-slot,
+body.pdf-capturing .search-hit-slot,
+body.pdf-capturing .search-current-slot,
+body.pdf-capturing .same-school-r1-alert,
+body.pdf-capturing .triple-card-alert,
+body.pdf-capturing .top4-rule-alert,
+body.pdf-capturing .same-school-r2-alert,
+body.pdf-capturing .empty-slot-placeholder {
+  outline: none !important;
+}
+body.pdf-capturing .selected-slot:not(.slot-custom-fill),
+body.pdf-capturing .search-hit-slot:not(.slot-custom-fill),
+body.pdf-capturing .search-current-slot:not(.slot-custom-fill),
+body.pdf-capturing .same-school-r1-alert:not(.slot-custom-fill),
+body.pdf-capturing .triple-card-alert:not(.slot-custom-fill),
+body.pdf-capturing .top4-rule-alert:not(.slot-custom-fill),
+body.pdf-capturing .same-school-r2-alert:not(.slot-custom-fill),
+body.pdf-capturing .empty-slot-placeholder:not(.slot-custom-fill) {
+  background-color: transparent !important;
+}
+body.pdf-capturing.print-hide-ranks .rank-badge-el,
+body.pdf-capturing.print-hide-ranks .priority-rank-el {
+  display: none !important;
+}
+body.pdf-capturing.print-hide-fills .slot-custom-fill {
+  background-color: transparent !important;
+}
+
+/* 右サイド控え枠 */
+.bench-slot {
+  transition: all 0.15s ease;
+}
+.bench-slot.selected {
+  border-color: #2563eb;
+  background-color: #eff6ff;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
+}
+
+/* 左右サイドバー開閉アニメーション */
+#tourney-sidebar,
+#bench-sidebar {
+  transition: width 0.2s ease, opacity 0.2s ease;
+}
+#tourney-sidebar.collapsed,
+#bench-sidebar.collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  border-left-width: 0 !important;
+  border-right-width: 0 !important;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* トースト通知 */
+#toast-container {
+  pointer-events: none;
+}
+.toast-item {
+  animation: toastIn 0.2s ease-out;
+}
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 印刷設定 */
+@media print {
+  @page {
+    margin: 7mm;
+  }
+  body {
+    background: #ffffff !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  #app-shell,
+  #view-tournament,
+  #canvas-viewport,
+  main {
+    display: block !important;
+    position: static !important;
+    overflow: visible !important;
+    height: auto !important;
+    width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+  }
+  #sheet-wrapper {
+    width: 100% !important;
+    height: auto !important;
+    display: block !important;
+  }
+  #tournament-sheet {
+    box-shadow: none !important;
+    transform: scale(1) !important;
+    margin: 0 auto !important;
+    padding: 4mm !important;
+  }
+  .selected-slot,
+  .search-hit-slot,
+  .search-current-slot,
+  .same-school-r1-alert,
+  .triple-card-alert,
+  .top4-rule-alert,
+  .same-school-r2-alert,
+  .empty-slot-placeholder {
+    background-color: transparent !important;
+    outline: none !important;
+  }
+  body.print-hide-ranks .rank-badge-el,
+  body.print-hide-ranks .priority-rank-el {
+    display: none !important;
+  }
+  body.print-hide-fills .slot-custom-fill {
+    background-color: transparent !important;
+  }
+
+  /* 進行表（OOP）専用印刷モード */
+  body.printing-oop #view-tournament,
+  body.printing-oop #view-registration,
+  body.printing-oop #view-spectator,
+  body.printing-oop #oop-board-workspace {
+    display: none !important;
+  }
+  body.printing-oop #view-oop,
+  body.printing-oop #oop-table-workspace {
+    display: block !important;
+    overflow: visible !important;
+    height: auto !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+  }
+  body.printing-oop #oop-print-sheet {
+    box-shadow: none !important;
+    border: none !important;
+    max-width: none !important;
+    width: 100% !important;
+    padding: 2mm !important;
+    margin: 0 !important;
+  }
+}
+
+/* 進行表カード・ドラッグ演出・試合間挿入ゾーン */
+.oop-match-card {
+  transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+}
+.oop-match-card.oop-selected-move {
+  outline: 2px solid #2563eb;
+  background-color: #eff6ff !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22);
+}
+.oop-court-drop-active {
+  outline: 2px dashed #059669 !important;
+  background-color: rgba(16, 185, 129, 0.08) !important;
+}
+
+/* 試合と試合の間の挿入スロット */
+.oop-insert-zone {
+  width: 10px;
+  min-width: 10px;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: width 0.14s ease, min-width 0.14s ease, background-color 0.14s ease, border-color 0.14s ease;
+  position: relative;
+}
+.oop-insert-zone .oop-insert-badge {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+/* ドラッグ中 or クリック移動モード中は全挿入ゾーンをわかりやすく展開 */
+body.oop-dragging-active .oop-insert-zone,
+body.oop-move-mode-active .oop-insert-zone {
+  width: 30px;
+  min-width: 30px;
+  margin: 0 2px;
+  background-color: rgba(37, 99, 235, 0.08);
+  border: 1.5px dashed #60a5fa;
+  cursor: pointer;
+}
+body.oop-dragging-active .oop-insert-zone .oop-insert-badge,
+body.oop-move-mode-active .oop-insert-zone .oop-insert-badge {
+  opacity: 1;
+}
+body.oop-move-mode-active .oop-insert-zone:hover,
+.oop-insert-zone.oop-insert-hover {
+  width: 44px !important;
+  min-width: 44px !important;
+  background-color: #10b981 !important;
+  border: 2px solid #047857 !important;
+  color: #ffffff !important;
+}
+body.oop-move-mode-active .oop-insert-zone:hover .oop-insert-badge,
+.oop-insert-zone.oop-insert-hover .oop-insert-badge {
+  opacity: 1 !important;
+  color: #ffffff !important;
+}
+
+/* カード上ドロップ時の左右インジケータ */
+.oop-match-card.oop-drop-left {
+  box-shadow: -4px 0 0 0 #10b981 !important;
+}
+.oop-match-card.oop-drop-right {
+  box-shadow: 4px 0 0 0 #10b981 !important;
+}
+
+/* 進行表PDFキャプチャ中 */
+body.oop-pdf-capturing .no-print {
+  display: none !important;
+}
+body.oop-pdf-capturing #oop-print-sheet {
+  box-shadow: none !important;
+  border: none !important;
+}
+body.oop-pdf-capturing #oop-print-sheet * {
+  overflow: visible !important;
+}
+
+/* 生徒・保護者ビュー ステータス点滅 */
+@keyframes livePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.live-dot {
+  animation: livePulse 1.6s ease-in-out infinite;
+}
