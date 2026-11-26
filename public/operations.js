@@ -20,7 +20,9 @@
     oopOpenWoKey: null,
     oopHideFinished: false,   // 終了済みをたたんで現在・次試合を左へ寄せる
     oopQueueDrawerOpen: false,
+    oopUndoStack: [],         // 進行表のコート移動・再配分Undoスタック
     oopFinishedCollapsed: {}, // { [courtKey]: boolean }
+    standalonePublic: null,   // { meta, liveEvent, verifyPasscodeFn, unlocked }
     umpireModalMatchKey: null,
     eventModalMode: 'add',    // 'add' | 'edit'
     spectator: {
@@ -170,6 +172,9 @@
     } catch (_) {
       // 無視
     }
+    if (!opsUi.suppressBundleSync && window.BracketCloud && typeof window.BracketCloud.scheduleCloudSync === 'function') {
+      window.BracketCloud.scheduleCloudSync(false);
+    }
   }
 
   function loadSpectatorFavorites() {
@@ -307,6 +312,7 @@
     opsUi.bundle.activeEventId = targetEv.id;
     opsUi.oopSelectedMoveKey = null;
     opsUi.oopOpenWoKey = null;
+    opsUi.oopUndoStack = [];
 
     opsUi.suppressBundleSync = true;
     hydrateStateFromSnapshot(targetEv.data);
@@ -315,6 +321,9 @@
     saveBundleToLocalStorage();
     renderEventSwitcherBar();
     updateOopHeaderBadge();
+    if (window.BracketCloud && typeof window.BracketCloud.attachAdminLiveListener === 'function') {
+      window.BracketCloud.attachAdminLiveListener();
+    }
 
     if (state.mainView === 'registration') {
       renderSchoolAliasEditor();
@@ -633,6 +642,11 @@
       hideFinBtn.className = opsUi.oopHideFinished
         ? 'px-2.5 py-1 text-[11px] font-bold rounded-lg border border-blue-400 bg-blue-50 text-blue-800 transition'
         : 'px-2.5 py-1 text-[11px] font-bold rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 transition';
+    }
+
+    const undoOopBtn = document.getElementById('btn-oop-undo');
+    if (undoOopBtn) {
+      undoOopBtn.disabled = opsUi.oopUndoStack.length === 0;
     }
 
     document.body.classList.toggle('oop-move-mode-active', Boolean(opsUi.oopSelectedMoveKey));
@@ -1118,8 +1132,31 @@
     renderEventSwitcherBar();
   }
 
+  function pushOopUndo() {
+    if (!state.oop) return;
+    opsUi.oopUndoStack.push({
+      courtCount: state.oop.courtCount,
+      courts: cloneDeep(state.oop.courts || {}),
+      statuses: cloneDeep(state.oop.statuses || {})
+    });
+    if (opsUi.oopUndoStack.length > 30) opsUi.oopUndoStack.shift();
+  }
+
+  function undoOopAction() {
+    if (!opsUi.oopUndoStack.length || !state.oop) return;
+    const prev = opsUi.oopUndoStack.pop();
+    state.oop.courtCount = prev.courtCount;
+    state.oop.courts = prev.courts;
+    state.oop.statuses = prev.statuses;
+    state.oop.updatedAt = new Date().toISOString();
+    saveToLocalStorage();
+    renderOopView();
+    showToast('直前の進行表変更を元に戻しました', 'info', 1800);
+  }
+
   function changeOopCourtCount(val) {
     const nextCount = Math.max(1, Math.min(24, parseInt(val, 10) || 4));
+    pushOopUndo();
     const catalog = getActiveMatchCatalog('full');
     state.oop.courtCount = nextCount;
     state.oop.courts = OopEngine.generateCourtAssignments(catalog.matches, nextCount, state.oop.assignMode, state.oop, true);
@@ -1140,6 +1177,7 @@
     if (!preserveActive && !confirm('試合中・終了済みの位置も含めて全試合のコート割当を初期ルールで再作成しますか？（スコア結果は消えません）')) {
       return;
     }
+    pushOopUndo();
     state.oop.courts = OopEngine.generateCourtAssignments(
       catalog.matches,
       state.oop.courtCount,
@@ -1242,6 +1280,7 @@
 
   function moveOopMatchToCourt(matchKey, targetCourtKey, insertIndex) {
     if (!matchKey || !state.oop || !state.oop.courts[targetCourtKey]) return;
+    pushOopUndo();
     const moved = OopEngine.moveMatchInCourts(state.oop.courts, matchKey, targetCourtKey, insertIndex);
     state.oop.courts = moved.courts;
     state.oop.updatedAt = new Date().toISOString();
@@ -1596,8 +1635,44 @@
     }
   }
 
+  function refreshPublishCloudBanner() {
+    const banner = document.getElementById('pub-cloud-status-banner');
+    if (!banner) return;
+    const isLogged = window.BracketCloud && window.BracketCloud.isLoggedIn();
+    const isSynced = window.BracketCloud && window.BracketCloud.isSynced();
+    if (isLogged && isSynced) {
+      banner.className = 'p-3 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-950 text-xs flex flex-wrap items-center justify-between gap-2';
+      banner.innerHTML = `
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
+          <span><b>クラウド公開同期中：</b>このQRコード・URLは別端末のスマホからリアルタイム閲覧できます。</span>
+        </div>
+        <button onclick="syncNowToCloud()" class="px-2.5 py-1 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg shrink-0">今すぐ最新を同期</button>
+      `;
+    } else if (isLogged) {
+      banner.className = 'p-3 rounded-xl border border-blue-200 bg-blue-50 text-blue-950 text-xs flex flex-wrap items-center justify-between gap-2';
+      banner.innerHTML = `
+        <span><b>ログイン済（未クラウド保存）：</b>別端末へQR配布する前に一度クラウド保存してください。</span>
+        <button onclick="syncNowToCloud()" class="px-2.5 py-1 text-[11px] font-bold bg-blue-600 hover:bg-blue-500 text-white rounded-lg shrink-0">クラウドへ公開・保存</button>
+      `;
+    } else {
+      banner.className = 'p-3 rounded-xl border border-amber-300 bg-amber-50 text-amber-950 text-xs flex flex-wrap items-center justify-between gap-2';
+      banner.innerHTML = `
+        <span><b>ローカルプレビュー専用（未ログイン）：</b>別端末のスマホからQR閲覧・スタッフ同期するにはGoogleログインが必要です。</span>
+        <button onclick="signInWithGoogle()" class="px-2.5 py-1 text-[11px] font-bold bg-slate-900 hover:bg-slate-800 text-white rounded-lg shrink-0">Googleログイン</button>
+      `;
+    }
+  }
+
+  function getStaffEventUrl(eventId) {
+    const base = `${window.location.origin}${window.location.pathname}`;
+    const tid = (opsUi.bundle && opsUi.bundle.id) || 'demo';
+    return `${base}#staff?t=${encodeURIComponent(tid)}&e=${encodeURIComponent(eventId)}`;
+  }
+
   function renderPublishModalContents() {
     if (!opsUi.bundle) return;
+    refreshPublishCloudBanner();
     const pub = opsUi.bundle.publish;
     const chk = document.getElementById('pub-enabled-checkbox');
     const txt = document.getElementById('pub-enabled-text');
@@ -1612,17 +1687,18 @@
       r.checked = (r.value === (pub.nameDisplayMode || 'full'));
     });
 
-    // 種目別スタッフPIN一覧
+    // 種目別スタッフPIN ＆ スタッフ専用URL一覧
     const pinsEl = document.getElementById('pub-staff-pins-list');
     if (pinsEl) {
       pinsEl.innerHTML = opsUi.bundle.events.map((ev) => `
-        <div class="flex items-center justify-between gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-amber-200 text-[11px]">
-          <div class="min-w-0">
+        <div class="bg-white px-2.5 py-2 rounded-lg border border-amber-200 text-[11px] space-y-1">
+          <div class="flex items-center justify-between gap-2">
             <div class="font-bold text-slate-900 truncate">${escapeHtml(ev.name)} <span class="text-[10px] text-slate-500 font-normal">(${escapeHtml(ev.venue || '第1会場')})</span></div>
+            <span class="font-mono font-extrabold text-amber-900 bg-amber-100 px-2 py-0.5 rounded tracking-widest shrink-0">PIN: ${escapeHtml(ev.staffPin || '0000')}</span>
           </div>
-          <div class="flex items-center gap-1.5 shrink-0">
-            <span class="font-mono font-extrabold text-amber-900 bg-amber-100 px-2 py-0.5 rounded tracking-widest">${escapeHtml(ev.staffPin || '0000')}</span>
-            <button onclick="copyStaffPin('${escapeJs(ev.id)}')" class="px-1.5 py-0.5 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 rounded text-slate-700">コピー</button>
+          <div class="flex items-center justify-end gap-1.5">
+            <button onclick="copyStaffUrl('${escapeJs(ev.id)}')" class="px-2 py-0.5 text-[10px] font-bold bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded text-blue-800">スタッフURL＋PINコピー</button>
+            <button onclick="copyStaffPin('${escapeJs(ev.id)}')" class="px-1.5 py-0.5 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 rounded text-slate-700">PINのみ</button>
             <button onclick="regenerateStaffPin('${escapeJs(ev.id)}')" class="px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 hover:bg-amber-200 rounded text-amber-900">再発行</button>
           </div>
         </div>
@@ -1701,13 +1777,31 @@
     }
   }
 
+  function copyStaffUrl(eventId) {
+    const ev = opsUi.bundle && opsUi.bundle.events.find((e) => e.id === eventId);
+    if (!ev) return;
+    const url = getStaffEventUrl(eventId);
+    const text = `【${opsUi.bundle.name}】${ev.name}（${ev.venue || '第1会場'}）会場スタッフ用\nURL: ${url}\nPIN: ${ev.staffPin}`;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => showToast(`${ev.name}のスタッフURL＋PINをコピーしました`, 'success'));
+    } else {
+      showToast(url, 'info');
+    }
+  }
+
   function regenerateStaffPin(eventId) {
     const ev = opsUi.bundle && opsUi.bundle.events.find((e) => e.id === eventId);
     if (!ev) return;
+    const oldPin = ev.staffPin;
     ev.staffPin = generateStaffPin();
+    ev.pinVersion = (ev.pinVersion || 1) + 1;
     saveBundleToLocalStorage();
+    if (window.BracketCloud && typeof window.BracketCloud.deleteStaffKeyFromCloud === 'function') {
+      window.BracketCloud.deleteStaffKeyFromCloud(opsUi.bundle.id, ev.id, oldPin);
+      window.BracketCloud.scheduleCloudSync(true);
+    }
     renderPublishModalContents();
-    showToast(`${ev.name}のスタッフPINを再発行しました`, 'success');
+    showToast(`${ev.name}のスタッフPINを再発行しました（旧PINは無効化）`, 'success');
   }
 
   // =========================================================================
@@ -1773,12 +1867,14 @@
     if (opsUi.spectator.favorites.has(favId)) opsUi.spectator.favorites.delete(favId);
     else opsUi.spectator.favorites.add(favId);
     saveSpectatorFavorites();
-    renderSpectatorView();
+    if (opsUi.standalonePublic) renderStandalonePublicFrame();
+    else renderSpectatorView();
   }
 
   function setSpectatorSearchQuery(q) {
     opsUi.spectator.searchQuery = String(q || '');
-    renderSpectatorView();
+    if (opsUi.standalonePublic) renderStandalonePublicFrame();
+    else renderSpectatorView();
     const inp = document.getElementById('spec-search-input');
     if (inp) {
       inp.focus();
@@ -1788,12 +1884,14 @@
 
   function setSpectatorSchoolFilter(school) {
     opsUi.spectator.schoolFilter = school;
-    renderSpectatorView();
+    if (opsUi.standalonePublic) renderStandalonePublicFrame();
+    else renderSpectatorView();
   }
 
   function adjustSpectatorBracketZoom(delta) {
     opsUi.spectator.bracketZoom = Math.max(0.45, Math.min(1.4, Math.round((opsUi.spectator.bracketZoom + delta) * 100) / 100));
-    renderSpectatorView();
+    if (opsUi.standalonePublic) renderStandalonePublicFrame();
+    else renderSpectatorView();
   }
 
   function renderSpectatorView() {
@@ -2072,16 +2170,21 @@
       else blackLines += line;
     };
 
+    const evIdForFav = opsUi.standalonePublic
+      ? opsUi.standalonePublic.liveEvent.id
+      : (opsUi.spectator.eventId || (getActiveEvent() && getActiveEvent().id) || '');
+
     let displayNo = 1;
     for (let i = 0; i < size; i++) {
       const leaf = tree[0][i];
       if (!leaf.active) continue;
       const y = nodeY[0][i];
       const nameStr = leaf.entry ? OopEngine.formatSpectatorPairName(leaf.entry, nameMode, shortSchool) : '空き';
+      const isFav = Boolean(leaf.entry && opsUi.spectator.favorites.has(`${evIdForFav}::${leaf.entry.id}`));
       labelsHtml += `<div style="left:4px; top:${y - 11}px; width:${labelW - 10}px; height:22px;"
-                          class="absolute flex items-center gap-1.5 text-[11px] leading-snug">
-        <span class="w-5 text-right font-bold text-slate-400 shrink-0">${displayNo++}</span>
-        <span class="font-bold text-slate-900 truncate">${escapeHtml(nameStr)}</span>
+                          class="absolute flex items-center gap-1.5 text-[11px] leading-snug rounded px-1 ${isFav ? 'bg-amber-200/80 ring-1 ring-amber-400' : ''}">
+        <span class="w-5 text-right font-bold ${isFav ? 'text-amber-900' : 'text-slate-400'} shrink-0">${displayNo++}</span>
+        <span class="font-bold text-slate-900 truncate">${isFav ? '★' : ''}${escapeHtml(nameStr)}</span>
       </div>`;
     }
 
@@ -2119,16 +2222,24 @@
     }
 
     const z = opsUi.spectator.bracketZoom;
+    const mountainJumpHtml = size >= 16 ? `
+      <div class="flex items-center gap-1">
+        <span class="text-[10px] font-bold text-slate-400">山:</span>
+        <button onclick="jumpSpectatorBracketMountain(0)" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-[10px] font-bold text-slate-700">A</button>
+        <button onclick="jumpSpectatorBracketMountain(1)" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-[10px] font-bold text-slate-700">D</button>
+        <button onclick="jumpSpectatorBracketMountain(2)" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-[10px] font-bold text-slate-700">C</button>
+        <button onclick="jumpSpectatorBracketMountain(3)" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-[10px] font-bold text-slate-700">B</button>
+      </div>` : '';
     return `
-      <div class="flex items-center justify-between bg-white px-3 py-2 rounded-xl border border-slate-200">
-        <span class="text-[11px] font-bold text-slate-600">横スクロール＆拡大縮小できます</span>
+      <div class="flex flex-wrap items-center justify-between gap-2 bg-white px-3 py-2 rounded-xl border border-slate-200">
+        ${mountainJumpHtml || '<span class="text-[11px] font-bold text-slate-600">横スクロール＆拡大縮小できます</span>'}
         <div class="flex items-center gap-1">
           <button onclick="adjustSpectatorBracketZoom(-0.12)" class="w-6 h-6 rounded bg-slate-100 font-bold text-slate-700">-</button>
           <span class="text-[11px] font-bold text-slate-700 w-10 text-center">${Math.round(z * 100)}%</span>
           <button onclick="adjustSpectatorBracketZoom(0.12)" class="w-6 h-6 rounded bg-slate-100 font-bold text-slate-700">+</button>
         </div>
       </div>
-      <div class="bg-white rounded-xl border border-slate-200 p-3 overflow-auto shadow-sm" style="max-height:540px;">
+      <div id="spec-bracket-scroll" class="bg-white rounded-xl border border-slate-200 p-3 overflow-auto shadow-sm" style="max-height:560px;">
         <div style="width:${Math.ceil(totalW * z)}px; height:${Math.ceil(totalH * z)}px; position:relative;">
           <div style="transform:scale(${z}); transform-origin:top left; width:${totalW}px; height:${totalH}px; position:relative;">
             <svg width="${totalW}" height="${totalH}" class="absolute inset-0 pointer-events-none">${blackLines}${redLines}${scoresSvg}</svg>
@@ -2265,6 +2376,240 @@
     `;
   }
 
+  function jumpSpectatorBracketMountain(quarterIdx) {
+    const box = document.getElementById('spec-bracket-scroll');
+    if (!box) return;
+    const maxY = Math.max(0, box.scrollHeight - box.clientHeight);
+    box.scrollTo({ top: Math.round((box.scrollHeight * quarterIdx) / 4), behavior: 'smooth' });
+    if (quarterIdx === 3 && maxY > 0) {
+      box.scrollTo({ top: Math.min(maxY, Math.round((box.scrollHeight * 3) / 4)), behavior: 'smooth' });
+    }
+  }
+
+  // =========================================================================
+  // 5b. Firebase フェーズ2連携ブリッジ（マイ大会・別端末公開ポータル・会場スタッフモード）
+  // =========================================================================
+  function getCurrentTournamentBundle() {
+    if (!opsUi.bundle) return null;
+    const curEv = getActiveEvent();
+    if (curEv) {
+      curEv.data = captureActiveStateSnapshot();
+      curEv.venue = (curEv.data.oop && curEv.data.oop.venue) || curEv.venue;
+    }
+    return cloneDeep(opsUi.bundle);
+  }
+
+  function replaceTournamentBundle(newBundle) {
+    if (!newBundle || !Array.isArray(newBundle.events) || !newBundle.events.length) return;
+    opsUi.bundle = cloneDeep(newBundle);
+    if (!opsUi.bundle.publish) opsUi.bundle.publish = { enabled: true, passcode: '', nameDisplayMode: 'full' };
+    opsUi.oopUndoStack = [];
+    const activeEv = getActiveEvent();
+    opsUi.suppressBundleSync = true;
+    hydrateStateFromSnapshot(activeEv.data);
+    opsUi.suppressBundleSync = false;
+    try { localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(opsUi.bundle)); } catch (_) {}
+    renderEventSwitcherBar();
+    updateOopHeaderBadge();
+    updatePublishIndicator();
+    if (state.slots.length > 0) switchMainView('tournament');
+    else switchMainView('registration');
+  }
+
+  function createFreshTournamentBundle(newName) {
+    const evId = randomId('ev');
+    const fresh = {
+      version: '6.0-bundle',
+      id: randomId('tour'),
+      name: newName || '新しい大会',
+      publish: { enabled: true, passcode: '', nameDisplayMode: 'full' },
+      activeEventId: evId,
+      events: [
+        {
+          id: evId,
+          name: '男子個人',
+          venue: '第1会場',
+          staffPin: generateStaffPin(),
+          pinVersion: 1,
+          data: createEmptyEventSnapshot('男子個人', '第1会場', 4)
+        }
+      ]
+    };
+    replaceTournamentBundle(fresh);
+    switchMainView('registration');
+    showToast(`新しい大会「${fresh.name}」を作成しました`, 'success');
+  }
+
+  function applyRemoteLivePatchToActiveEvent(patch) {
+    if (!patch) return;
+    opsUi.suppressBundleSync = true;
+    try {
+      if (patch.results) state.results = cloneDeep(patch.results);
+      if (patch.consolation) state.consolation = cloneDeep(patch.consolation);
+      if (patch.oop) state.oop = OopEngine.createDefaultOopState(patch.oop);
+      const activeEv = getActiveEvent();
+      if (activeEv) activeEv.data = captureActiveStateSnapshot();
+      try { localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(opsUi.bundle)); } catch (_) {}
+      updateOopHeaderBadge();
+      if (state.mainView === 'tournament') renderSheet();
+      else if (state.mainView === 'oop') renderOopView();
+      else if (state.mainView === 'spectator') renderSpectatorView();
+    } finally {
+      opsUi.suppressBundleSync = false;
+    }
+  }
+
+  function hydrateStaffSingleEvent(payload) {
+    if (!payload) return;
+    opsUi.suppressBundleSync = true;
+    try {
+      const snap = Object.assign(captureActiveStateSnapshot(), {
+        title: `${payload.tournamentName} ${payload.eventName}`,
+        matchFormat: payload.matchFormat || 7,
+        bracketSize: payload.bracketSize || 16,
+        slots: payload.slots || [],
+        entries: payload.entries || [],
+        activeSlotMask: payload.activeSlotMask || [],
+        schoolAliases: payload.schoolAliases || {},
+        results: payload.results || {},
+        consolation: payload.consolation || state.consolation,
+        oop: OopEngine.createDefaultOopState(payload.oop)
+      });
+      hydrateStateFromSnapshot(snap);
+      if (state.mainView !== 'oop' && state.mainView !== 'tournament') {
+        switchMainView('oop');
+      } else if (state.mainView === 'oop') {
+        renderOopView();
+      } else {
+        renderSheet();
+      }
+    } finally {
+      opsUi.suppressBundleSync = false;
+    }
+  }
+
+  function renderStandalonePublicPortal(meta, liveEventObj, verifyPasscodeFn) {
+    const prevUnlocked = opsUi.standalonePublic && opsUi.standalonePublic.meta && opsUi.standalonePublic.meta.id === meta.id
+      ? opsUi.standalonePublic.unlocked
+      : false;
+    opsUi.standalonePublic = { meta, liveEvent: liveEventObj, verifyPasscodeFn, unlocked: prevUnlocked };
+    opsUi.spectator.frameMode = 'full';
+    renderStandalonePublicFrame();
+  }
+
+  function renderStandalonePublicFrame() {
+    const ctx = opsUi.standalonePublic;
+    const frame = document.getElementById('spectator-portal-frame');
+    if (!ctx || !frame) return;
+    const { meta, liveEvent } = ctx;
+
+    if (meta.hasPasscode && !ctx.unlocked) {
+      frame.innerHTML = `
+        <div class="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4 bg-white">
+          <div class="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center text-xl">🔑</div>
+          <div class="space-y-1">
+            <div class="text-[10px] font-bold text-emerald-700">生徒・保護者向け LIVE 大会ポータル</div>
+            <h3 class="text-base font-extrabold text-slate-900">${escapeHtml(meta.name)}</h3>
+            <p class="text-xs text-slate-500">大会本部から案内されたパスコード（合言葉）を入力してください</p>
+          </div>
+          <div class="w-full max-w-xs space-y-2">
+            <input type="password" id="standalone-pass-input" placeholder="パスコードを入力"
+                   onkeydown="if(event.key==='Enter') submitStandalonePasscode()"
+                   class="w-full px-3 py-2 text-sm font-bold text-center border border-slate-300 rounded-lg focus:outline-none focus:border-emerald-500" />
+            <div id="standalone-pass-err" class="text-[11px] font-bold text-rose-600 min-h-[16px]"></div>
+            <button onclick="submitStandalonePasscode()" class="w-full py-2.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg shadow">閲覧する</button>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    const evData = liveEvent.data;
+    const aliases = evData.schoolAliases || {};
+    const shortSchool = (raw) => {
+      const k = String(raw || '').trim();
+      if (Object.prototype.hasOwnProperty.call(aliases, k) && String(aliases[k] || '').trim()) return String(aliases[k]).trim();
+      return formatSchoolShortName(k);
+    };
+    const nameMode = meta.nameDisplayMode || 'full';
+    const pairFmt = (entry) => OopEngine.formatSpectatorPairName(entry, nameMode, shortSchool);
+    const catalog = OopEngine.buildMatchCatalog({
+      bracketSize: evData.bracketSize || 16,
+      slots: evData.slots || [],
+      activeSlotMask: evData.activeSlotMask || [],
+      results: evData.results || {},
+      consolation: evData.consolation || null,
+      labelFormatter: pairFmt
+    });
+    const oop = OopEngine.reconcileOopState(evData.oop, catalog).oop;
+
+    const tab = opsUi.spectator.tab;
+    let bodyHtml = '';
+    if (tab === 'courts') bodyHtml = renderSpectatorCourtsTab(catalog, oop, pairFmt);
+    else if (tab === 'bracket') bodyHtml = renderSpectatorBracketTab(evData, catalog, nameMode, shortSchool);
+    else bodyHtml = renderSpectatorSearchTab(liveEvent, evData, catalog, oop, nameMode, shortSchool, pairFmt);
+
+    frame.innerHTML = `
+      <div class="bg-slate-900 text-white px-4 py-3 space-y-2 shrink-0">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <div class="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 live-dot"></span>
+              <span>LIVE リアルタイム速報（自動更新中）</span>
+            </div>
+            <h2 class="text-sm sm:text-base font-extrabold leading-tight truncate mt-0.5">${escapeHtml(meta.name)}</h2>
+          </div>
+          <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 shrink-0">${escapeHtml(oop.venue || liveEvent.venue || '第1会場')}</span>
+        </div>
+        <div class="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+          ${(meta.events || []).map((item) => {
+            const act = item.id === liveEvent.id;
+            return `<button onclick="selectStandalonePublicEvent('${escapeJs(item.id)}')"
+                            class="px-2.5 py-1 text-[11px] font-bold rounded-full shrink-0 transition ${act ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}">
+                      ${escapeHtml(item.name)}
+                    </button>`;
+          }).join('')}
+        </div>
+      </div>
+
+      <div class="bg-white border-b border-slate-200 grid grid-cols-3 shrink-0 sticky top-0 z-10">
+        <button onclick="setStandaloneSpectatorTab('courts')" class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'courts' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500'}">コート状況</button>
+        <button onclick="setStandaloneSpectatorTab('bracket')" class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'bracket' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500'}">トーナメント表</button>
+        <button onclick="setStandaloneSpectatorTab('search')" class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'search' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500'}">選手・学校検索</button>
+      </div>
+
+      <div class="flex-1 overflow-auto p-3 space-y-3 bg-slate-50">
+        ${bodyHtml}
+      </div>
+    `;
+  }
+
+  async function submitStandalonePasscode() {
+    const ctx = opsUi.standalonePublic;
+    if (!ctx || typeof ctx.verifyPasscodeFn !== 'function') return;
+    const inp = document.getElementById('standalone-pass-input');
+    const errEl = document.getElementById('standalone-pass-err');
+    const ok = await ctx.verifyPasscodeFn(inp ? String(inp.value || '').trim() : '');
+    if (ok) {
+      ctx.unlocked = true;
+      renderStandalonePublicFrame();
+    } else if (errEl) {
+      errEl.textContent = 'パスコードが一致しません。再度ご確認ください。';
+    }
+  }
+
+  function selectStandalonePublicEvent(evId) {
+    if (!opsUi.standalonePublic || !window.BracketCloud) return;
+    opsUi.spectator.schoolFilter = 'ALL';
+    window.BracketCloud.subscribePublicEvent(opsUi.standalonePublic.meta.id, evId);
+  }
+
+  function setStandaloneSpectatorTab(tab) {
+    opsUi.spectator.tab = tab;
+    if (opsUi.standalonePublic) renderStandalonePublicFrame();
+    else renderSpectatorView();
+  }
+
   // =========================================================================
   // 6. app.js からのライフサイクルフック接続 ＆ グローバル公開
   // =========================================================================
@@ -2323,6 +2668,7 @@
   window.selectOopMatchForMove = selectOopMatchForMove;
   window.cancelOopMoveSelection = cancelOopMoveSelection;
   window.moveOopMatchToCourt = moveOopMatchToCourt;
+  window.undoOopAction = undoOopAction;
   window.toggleOopHideFinished = toggleOopHideFinished;
   window.toggleOopQueueDrawer = toggleOopQueueDrawer;
   window.reorderOopMatch = reorderOopMatch;
@@ -2353,8 +2699,21 @@
   window.closePublishModal = closePublishModal;
   window.updatePublishSettingsFromModal = updatePublishSettingsFromModal;
   window.copyPortalUrl = copyPortalUrl;
+  window.copyStaffUrl = copyStaffUrl;
   window.copyStaffPin = copyStaffPin;
   window.regenerateStaffPin = regenerateStaffPin;
+  window.refreshPublishCloudBanner = refreshPublishCloudBanner;
+
+  window.getCurrentTournamentBundle = getCurrentTournamentBundle;
+  window.replaceTournamentBundle = replaceTournamentBundle;
+  window.createFreshTournamentBundle = createFreshTournamentBundle;
+  window.applyRemoteLivePatchToActiveEvent = applyRemoteLivePatchToActiveEvent;
+  window.hydrateStaffSingleEvent = hydrateStaffSingleEvent;
+  window.renderStandalonePublicPortal = renderStandalonePublicPortal;
+  window.submitStandalonePasscode = submitStandalonePasscode;
+  window.selectStandalonePublicEvent = selectStandalonePublicEvent;
+  window.setStandaloneSpectatorTab = setStandaloneSpectatorTab;
+  window.jumpSpectatorBracketMountain = jumpSpectatorBracketMountain;
 
   window.setSpectatorFrameMode = setSpectatorFrameMode;
   window.setSpectatorTab = setSpectatorTab;
@@ -2369,8 +2728,8 @@
   // 初期化（app.js の init 完了後に実行）
   initBundle();
 
-  // #public ハッシュ付きで開かれた場合は自動的に生徒・保護者ビューへ遷移
-  if (window.location.hash && window.location.hash.startsWith('#public')) {
+  // #public（パラメータ無しプレビュー）の場合のみローカル公開ビューへ遷移（?t=付きはfirebase-sync.jsが処理）
+  if (window.location.hash === '#public') {
     switchMainView('spectator');
   }
 })();

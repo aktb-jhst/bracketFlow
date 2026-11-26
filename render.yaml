@@ -3,7 +3,7 @@ services:
     name: bracketflow
     runtime: static
     buildCommand: ""
-    staticPublishPath: .
+    staticPublishPath: public
     headers:
       - path: /*
         name: X-Robots-Tag
