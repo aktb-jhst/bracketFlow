@@ -39,11 +39,30 @@
       bracketBlock: 'ALL',    // 'ALL' | 'A' | 'B' | 'C' | 'D'
       bracketStage: 'ALL',    // 'ALL' | '32' | '16' | '8'
       bracketZoom: 0.78,
+      myCheckCollapsed: false,
       unlockedPasscode: '',
       organizerBypassClosed: false,
       favorites: new Set()
     }
   };
+
+  function formatLocalClock(isoStr) {
+    const d = isoStr ? new Date(isoStr) : new Date();
+    if (Number.isNaN(d.getTime())) return '';
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  function formatLocalDateTime(isoStr) {
+    if (!isoStr) return '-';
+    const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return String(isoStr).replace('T', ' ').slice(0, 16);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    return `${yyyy}/${mm}/${dd} ${hh}:${mi}`;
+  }
 
   function randomId(prefix) {
     return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -2474,6 +2493,11 @@
     }
   }
 
+  function toggleSpectatorMyCheckCollapsed() {
+    opsUi.spectator.myCheckCollapsed = !opsUi.spectator.myCheckCollapsed;
+    refreshActiveSpectatorPortal();
+  }
+
   function focusSpectatorCourt(courtKey) {
     opsUi.spectator.tab = 'courts';
     opsUi.spectator.courtFilter = 'ALL';
@@ -2590,47 +2614,80 @@
     });
     const totalMatches = catalog.matches.length;
     const progressPct = totalMatches > 0 ? Math.round((finishedCnt / totalMatches) * 100) : 0;
-    const updatedClock = oop.updatedAt ? oop.updatedAt.slice(11, 16) : new Date().toTimeString().slice(0, 5);
+    const candidateTimestamps = [
+      oop.updatedAt,
+      activeEvent && activeEvent.updatedAt,
+      tourAnnouncement && tourAnnouncement.updatedAt,
+      oop.announcement && oop.announcement.updatedAt
+    ].filter((t) => typeof t === 'string' && !Number.isNaN(new Date(t).getTime()));
+    candidateTimestamps.sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+    const updatedClock = formatLocalClock(candidateTimestamps[0] || new Date().toISOString());
 
-    // ① マイチェック（★登録ペア）ピン留めバー
+    // ① マイチェック（★登録ペア）省スペース1行チップバー（開閉対応）
     const entries = Array.isArray(evData.entries) ? evData.entries : [];
     const checkedEntries = entries.filter((e) => opsUi.spectator.favorites.has(`${activeEvent.id}::${e.id}`));
     const checkedEntryIdSet = new Set(checkedEntries.map((e) => e.id));
+    const searchTabCmd = isStandalone ? "setStandaloneSpectatorTab('search')" : "setSpectatorTab('search')";
 
-    const myCheckBarHtml = checkedEntries.length > 0 ? `
-      <div class="bg-slate-900/95 border-b border-teal-800/60 px-3 py-2 shrink-0 space-y-1.5">
-        <div class="flex items-center justify-between text-[10px]">
-          <span class="font-extrabold text-amber-300 flex items-center gap-1">
-            <span>★ マイチェック（${checkedEntries.length}組）</span>
-          </span>
-          <button onclick="${isStandalone ? "setStandaloneSpectatorTab('search')" : "setSpectatorTab('search')"}" class="text-teal-300 hover:text-white font-bold">変更 ▸</button>
-        </div>
-        <div class="flex items-stretch gap-2 overflow-x-auto pb-0.5">
-          ${checkedEntries.map((e) => {
-            const st = metrics.getEntryStatus(e);
-            const tapAction = st.targetCourt
-              ? `focusSpectatorCourt('${escapeJs(st.targetCourt)}')`
-              : `${isStandalone ? "setStandaloneSpectatorTab('search')" : "setSpectatorTab('search')"}`;
-            return `
-              <button onclick="${tapAction}"
-                      class="shrink-0 min-w-[168px] max-w-[220px] text-left px-2.5 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-800 border border-slate-700/90 transition space-y-1">
-                <div class="text-[11px] font-extrabold text-white truncate">${escapeHtml(pairFmt(e))}</div>
-                <div class="flex items-center justify-between gap-1.5">
-                  <span class="px-1.5 py-0.5 rounded-md text-[10px] font-bold ${st.badge.cls}">${escapeHtml(st.badge.text)}</span>
-                  ${st.targetCourt ? `<span class="text-[9.5px] text-teal-300 font-bold">コートへ ▸</span>` : ''}
-                </div>
-              </button>
-            `;
-          }).join('')}
-        </div>
-      </div>
-    ` : `
-      <button onclick="${isStandalone ? "setStandaloneSpectatorTab('search')" : "setSpectatorTab('search')"}"
-              class="w-full text-left bg-teal-950/90 hover:bg-teal-900/90 text-teal-100 border-b border-teal-800/70 px-3.5 py-1.5 text-[11px] flex items-center justify-between gap-2 shrink-0 transition">
-        <span class="truncate"><b class="text-amber-300 mr-1">☆ マイチェック:</b>選手に★を付けると、ここにコートと待ち試合数を固定表示</span>
-        <span class="font-bold text-teal-300 shrink-0">登録 ▸</span>
-      </button>
-    `;
+    let myCheckBarHtml = '';
+    if (checkedEntries.length > 0) {
+      if (opsUi.spectator.myCheckCollapsed) {
+        const urgentCnt = checkedEntries.filter((e) => {
+          const k = metrics.getEntryStatus(e).stateKind;
+          return k === 'playing' || k === 'calling' || k === 'next';
+        }).length;
+        myCheckBarHtml = `
+          <div class="bg-slate-900 border-b border-teal-800/60 px-3 py-1 flex items-center justify-between gap-2 shrink-0 text-[10.5px]">
+            <button onclick="toggleSpectatorMyCheckCollapsed()" class="flex items-center gap-1.5 text-amber-300 font-extrabold min-w-0">
+              <span>★ マイチェック（${checkedEntries.length}組）</span>
+              ${urgentCnt > 0 ? `<span class="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[9.5px] font-extrabold">${urgentCnt}組まもなく/試合中</span>` : ''}
+            </button>
+            <div class="flex items-center gap-2 shrink-0">
+              <button onclick="${searchTabCmd}" class="text-teal-300 hover:text-white font-bold text-[10px]">編集</button>
+              <button onclick="toggleSpectatorMyCheckCollapsed()" class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-200 font-bold text-[10px]">表示 ▾</button>
+            </div>
+          </div>
+        `;
+      } else {
+        myCheckBarHtml = `
+          <div class="bg-slate-900 border-b border-teal-800/60 px-2.5 py-1.5 flex items-center gap-1.5 shrink-0">
+            <button onclick="toggleSpectatorMyCheckCollapsed()"
+                    title="マイチェックをたたむ"
+                    class="shrink-0 px-1.5 py-1 rounded-lg bg-amber-400/15 border border-amber-400/40 text-amber-300 text-[10px] font-extrabold flex items-center gap-0.5">
+              <span>★${checkedEntries.length}</span>
+              <span class="text-[9px] opacity-80">▴</span>
+            </button>
+            <div class="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+              ${checkedEntries.map((e) => {
+                const st = metrics.getEntryStatus(e);
+                const tapAction = st.targetCourt
+                  ? `focusSpectatorCourt('${escapeJs(st.targetCourt)}')`
+                  : searchTabCmd;
+                const shortName = OopEngine.formatSpectatorPairName(e, nameMode, null);
+                return `
+                  <button onclick="${tapAction}"
+                          class="shrink-0 inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 transition">
+                    <span class="text-[11px] font-extrabold text-white max-w-[108px] truncate">${escapeHtml(shortName)}</span>
+                    <span class="px-1.5 py-0.2 rounded-full text-[9.5px] font-extrabold shrink-0 ${st.badge.cls}">${escapeHtml(st.badge.text)}</span>
+                  </button>
+                `;
+              }).join('')}
+            </div>
+            <button onclick="${searchTabCmd}"
+                    title="マイチェックを追加・変更"
+                    class="shrink-0 px-1.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-teal-300 text-[10px] font-extrabold">＋</button>
+          </div>
+        `;
+      }
+    } else {
+      myCheckBarHtml = `
+        <button onclick="${searchTabCmd}"
+                class="w-full text-left bg-teal-950/95 hover:bg-teal-900/90 text-teal-100 border-b border-teal-800/70 px-3 py-1 text-[10.5px] flex items-center justify-between gap-2 shrink-0 transition">
+          <span class="truncate"><b class="text-amber-300 mr-1">☆ マイチェック:</b>選手に★を付けるとここに待ち順を固定表示</span>
+          <span class="font-bold text-teal-300 shrink-0">登録 ▸</span>
+        </button>
+      `;
+    }
 
     const tab = opsUi.spectator.tab;
     let bodyHtml = '';
@@ -2647,65 +2704,63 @@
 
     frame.innerHTML = `
       <!-- BracketFlow オリジナル ヘッダー（ディープティール・進行ゲージ付） -->
-      <div class="bg-gradient-to-br from-slate-950 via-slate-900 to-teal-950 text-white px-4 pt-3 pb-2.5 space-y-2 shrink-0">
-        <div class="flex items-start justify-between gap-2">
-          <div class="flex items-start gap-2 min-w-0">
-            <span class="w-7 h-7 mt-0.5 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 text-slate-950 flex items-center justify-center shrink-0 shadow-sm">
-              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <div class="${isStandalone ? 'spectator-standalone-header ' : ''}bg-gradient-to-br from-slate-950 via-slate-900 to-teal-950 text-white px-3 pt-2 pb-2 space-y-1.5 shrink-0">
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="w-6 h-6 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 text-slate-950 flex items-center justify-center shrink-0 shadow-sm">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M4 6h5v5H4" /><path d="M4 18h5v-5H4" /><path d="M9 8.5h5v7H9" /><path d="M14 12h6" />
               </svg>
             </span>
             <div class="min-w-0">
-              <div class="flex items-center gap-1.5 text-[10px] font-bold text-emerald-300">
+              <div class="flex items-center gap-1.5 text-[9.5px] font-bold text-emerald-300 leading-none">
                 <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 live-dot"></span>
                 <span>LIVE</span>
-                <span class="text-slate-400 font-medium">${escapeHtml(updatedClock)} 更新</span>
-                ${nameMode === 'surname' ? `<span class="px-1.5 rounded bg-slate-800/90 text-slate-300 border border-slate-700">名字表示</span>` : ''}
+                <span class="text-slate-300 font-semibold">${escapeHtml(updatedClock)} 更新</span>
+                ${nameMode === 'surname' ? `<span class="px-1 rounded bg-slate-800/90 text-slate-300 border border-slate-700">名字表示</span>` : ''}
               </div>
-              <h2 class="text-sm sm:text-base font-extrabold leading-tight truncate mt-0.5">${escapeHtml(tournamentName)}</h2>
+              <h2 class="text-sm font-extrabold leading-tight truncate mt-0.5">${escapeHtml(tournamentName)}</h2>
             </div>
           </div>
           <span class="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-white/10 text-teal-100 border border-white/15 shrink-0">${escapeHtml(oop.venue || activeEvent.venue || '第1会場')}</span>
         </div>
 
-        <!-- 種目切替ピル -->
-        <div class="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-          ${(eventsList || []).map((item) => {
-            const act = item.id === activeEvent.id;
-            return `<button onclick="${evSelectFn}('${escapeJs(item.id)}')"
-                            class="px-3 py-1 text-[11px] font-bold rounded-full shrink-0 transition ${act ? 'bg-emerald-400 text-slate-950 shadow-sm' : 'bg-white/10 text-slate-200 hover:bg-white/20'}">
-                      ${escapeHtml(item.name)}
-                    </button>`;
-          }).join('')}
-        </div>
-
-        <!-- 大会消化ゲージ（BracketFlowオリジナル・パルスバー） -->
-        <div class="space-y-1 pt-0.5">
-          <div class="flex items-center justify-between text-[10px] font-bold text-slate-300">
-            <span>大会進行：${finishedCnt} / ${totalMatches} 試合終了</span>
+        <!-- 種目切替ピル ＆ 進行ゲージ（コンパクト配置） -->
+        <div class="flex items-center gap-2">
+          <div class="flex-1 min-w-0 flex items-center gap-1 overflow-x-auto no-scrollbar">
+            ${(eventsList || []).map((item) => {
+              const act = item.id === activeEvent.id;
+              return `<button onclick="${evSelectFn}('${escapeJs(item.id)}')"
+                              class="px-2.5 py-0.5 text-[10.5px] font-bold rounded-full shrink-0 transition ${act ? 'bg-emerald-400 text-slate-950 shadow-sm' : 'bg-white/10 text-slate-200 hover:bg-white/20'}">
+                        ${escapeHtml(item.name)}
+                      </button>`;
+            }).join('')}
+          </div>
+          <div class="shrink-0 flex items-center gap-1.5 text-[10px] font-bold text-slate-300">
+            <span>進行 ${finishedCnt}/${totalMatches}</span>
             <span class="text-emerald-300">${progressPct}%</span>
           </div>
-          <div class="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
-            <div class="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-300 transition-all duration-300" style="width:${progressPct}%"></div>
-          </div>
+        </div>
+        <div class="w-full h-1 rounded-full bg-white/10 overflow-hidden">
+          <div class="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-300 transition-all duration-300" style="width:${progressPct}%"></div>
         </div>
       </div>
 
-      <!-- 運営者アナウンスバナー -->
+      <!-- 運営者アナウンスバナー（高視認性） -->
       ${renderAnnouncementBannersHtml(tourAnnouncement, oop.announcement, oop.venue || activeEvent.venue)}
 
-      <!-- マイチェック（★固定ライブバー） -->
+      <!-- マイチェック（省スペース1行ライブバー） -->
       ${myCheckBarHtml}
 
       <!-- タブ本体 -->
-      <div class="flex-1 overflow-auto p-3 space-y-3 bg-slate-100/90">
+      <div class="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 pb-6 space-y-3 bg-slate-100/90">
         ${bodyHtml}
       </div>
 
-      <!-- スマホ親指最適化 ボトムドック3タブナビ -->
-      <nav class="bg-white border-t border-slate-200 grid grid-cols-3 shrink-0 shadow-[0_-4px_12px_rgba(15,23,42,0.06)]">
+      <!-- スマホ親指最適化 ボトムドック3タブナビ（iOSセーフエリア対応） -->
+      <nav class="spectator-bottom-nav bg-white border-t border-slate-200 grid grid-cols-3 shrink-0 shadow-[0_-4px_12px_rgba(15,23,42,0.08)] z-20">
         <button onclick="${tabSelectFn}('courts')"
-                class="py-2 flex flex-col items-center justify-center gap-0.5 transition ${tab === 'courts' ? 'text-teal-700 bg-teal-50/60' : 'text-slate-500 hover:text-slate-800'}">
+                class="pt-2 pb-1.5 flex flex-col items-center justify-center gap-0.5 transition ${tab === 'courts' ? 'text-teal-700 bg-teal-50/70' : 'text-slate-500 hover:text-slate-800'}">
           <div class="relative flex items-center justify-center">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
             ${liveCourtCnt > 0 ? `<span class="ml-1 px-1 rounded-full bg-rose-600 text-white text-[9px] font-extrabold leading-tight">${liveCourtCnt}</span>` : ''}
@@ -2713,12 +2768,12 @@
           <span class="text-[10px] font-extrabold">コート状況</span>
         </button>
         <button onclick="${tabSelectFn}('bracket')"
-                class="py-2 flex flex-col items-center justify-center gap-0.5 transition ${tab === 'bracket' ? 'text-teal-700 bg-teal-50/60' : 'text-slate-500 hover:text-slate-800'}">
+                class="pt-2 pb-1.5 flex flex-col items-center justify-center gap-0.5 transition ${tab === 'bracket' ? 'text-teal-700 bg-teal-50/70' : 'text-slate-500 hover:text-slate-800'}">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h5v5H4M4 18h5v-5H4M9 8.5h5v7H9M14 12h6"/></svg>
           <span class="text-[10px] font-extrabold">トーナメント</span>
         </button>
         <button onclick="${tabSelectFn}('search')"
-                class="py-2 flex flex-col items-center justify-center gap-0.5 transition ${tab === 'search' ? 'text-teal-700 bg-teal-50/60' : 'text-slate-500 hover:text-slate-800'}">
+                class="pt-2 pb-1.5 flex flex-col items-center justify-center gap-0.5 transition ${tab === 'search' ? 'text-teal-700 bg-teal-50/70' : 'text-slate-500 hover:text-slate-800'}">
           <div class="relative flex items-center justify-center">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path stroke-linecap="round" d="M20 20l-3.5-3.5"/></svg>
             ${checkedEntries.length > 0 ? `<span class="ml-1 px-1 rounded-full bg-amber-400 text-slate-950 text-[9px] font-extrabold leading-tight">★${checkedEntries.length}</span>` : ''}
@@ -3631,20 +3686,51 @@
     }
     if (!items.length) return '';
 
-    const styles = {
-      urgent: 'bg-rose-600 text-white border-rose-700',
-      warn: 'bg-amber-100 text-amber-950 border-amber-300',
-      info: 'bg-blue-50 text-blue-950 border-blue-200'
+    const themeMap = {
+      urgent: {
+        wrap: 'bg-gradient-to-r from-rose-600 via-red-600 to-rose-700 text-white border-y-2 border-rose-800',
+        pill: 'bg-white text-rose-700',
+        pillText: '緊急・重要',
+        iconBox: 'bg-white/20 text-white border border-white/30',
+        dot: '<span class="w-2 h-2 rounded-full bg-white live-dot shrink-0"></span>',
+        timeCls: 'bg-black/20 text-rose-100'
+      },
+      warn: {
+        wrap: 'bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-300 text-slate-950 border-y-2 border-amber-600',
+        pill: 'bg-slate-950 text-amber-300',
+        pillText: '重要なお知らせ',
+        iconBox: 'bg-amber-950/15 text-slate-950 border border-amber-800/30',
+        dot: '<span class="w-2 h-2 rounded-full bg-rose-600 live-dot shrink-0"></span>',
+        timeCls: 'bg-amber-950/15 text-slate-900'
+      },
+      info: {
+        wrap: 'bg-gradient-to-r from-blue-600 via-blue-600 to-indigo-600 text-white border-y-2 border-blue-800',
+        pill: 'bg-white text-blue-700',
+        pillText: 'お知らせ',
+        iconBox: 'bg-white/20 text-white border border-white/30',
+        dot: '',
+        timeCls: 'bg-black/20 text-blue-100'
+      }
     };
-    return `<div class="shrink-0 divide-y divide-black/10">${items.map(({ scope, ann }) => {
-      const cls = styles[ann.level] || styles.warn;
-      const tm = ann.updatedAt ? ann.updatedAt.slice(11, 16) : '';
-      return `<div class="px-3.5 py-2 border-b text-xs leading-snug ${cls}">
-        <div class="flex items-center justify-between gap-2 text-[10px] font-extrabold opacity-90 mb-0.5">
-          <span>📢 ${escapeHtml(scope)}</span>
-          ${tm ? `<span>${escapeHtml(tm)} 更新</span>` : ''}
+
+    return `<div class="shrink-0 shadow-md relative z-10 divide-y divide-black/15">${items.map(({ scope, ann }) => {
+      const th = themeMap[ann.level] || themeMap.warn;
+      const tm = ann.updatedAt ? formatLocalClock(ann.updatedAt) : '';
+      return `<div class="px-3 py-2.5 ${th.wrap}">
+        <div class="flex items-start gap-2.5">
+          <div class="w-7 h-7 rounded-lg ${th.iconBox} flex items-center justify-center shrink-0 mt-0.5 text-sm font-bold shadow-sm" aria-hidden="true">📢</div>
+          <div class="min-w-0 flex-1 space-y-1">
+            <div class="flex items-center justify-between gap-1.5 flex-wrap">
+              <div class="flex items-center gap-1.5">
+                ${th.dot}
+                <span class="px-1.5 py-0.2 rounded text-[10px] font-black tracking-wide ${th.pill}">${th.pillText}</span>
+                <span class="text-[11px] font-extrabold opacity-95">${escapeHtml(scope)}</span>
+              </div>
+              ${tm ? `<span class="px-1.5 py-0.2 rounded text-[10px] font-bold ${th.timeCls}">${escapeHtml(tm)} 更新</span>` : ''}
+            </div>
+            <div class="text-[13px] font-extrabold leading-snug whitespace-pre-wrap break-words">${escapeHtml(ann.text)}</div>
+          </div>
         </div>
-        <div class="font-bold whitespace-pre-wrap">${escapeHtml(ann.text)}</div>
       </div>`;
     }).join('')}</div>`;
   }
@@ -3801,7 +3887,7 @@
           <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
             ${filteredCloud.map((t) => {
               const isCur = t.id === opsUi.bundle.id;
-              const dt = t.updatedAt ? t.updatedAt.replace('T', ' ').slice(0, 16) : '-';
+              const dt = formatLocalDateTime(t.updatedAt);
               return `
                 <div class="p-3 rounded-xl border ${isCur ? 'border-emerald-400 bg-emerald-50/40' : 'border-slate-200 bg-slate-50/70'} flex items-center justify-between gap-3">
                   <div class="min-w-0 flex-1">
@@ -3994,6 +4080,7 @@
   window.setSpectatorBracketStage = setSpectatorBracketStage;
   window.fitSpectatorBracketZoom = fitSpectatorBracketZoom;
   window.jumpSpectatorToFirstChecked = jumpSpectatorToFirstChecked;
+  window.toggleSpectatorMyCheckCollapsed = toggleSpectatorMyCheckCollapsed;
   window.focusSpectatorCourt = focusSpectatorCourt;
 
   // 初期化（app.js の init 完了後に実行）

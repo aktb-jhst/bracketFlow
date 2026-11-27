@@ -13,6 +13,12 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100vh;
+  height: 100dvh;
+}
+
 body {
   font-family: 'Noto Sans JP', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', -apple-system, BlinkMacSystemFont, sans-serif;
   background-color: var(--bg-app);
@@ -91,8 +97,33 @@ html.standalone-public-boot #view-oop,
 html.standalone-public-boot #spectator-preview-bar {
   display: none !important;
 }
+html.standalone-public-boot,
+html.standalone-public-boot body {
+  height: 100vh !important;
+  height: 100dvh !important;
+  overflow: hidden !important;
+}
 html.standalone-public-boot #view-spectator {
   display: flex !important;
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  z-index: 40 !important;
+}
+.spectator-standalone-header {
+  padding-top: max(8px, env(safe-area-inset-top));
+}
+.spectator-bottom-nav {
+  padding-bottom: max(6px, env(safe-area-inset-bottom));
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 html.standalone-staff-boot #view-home,
 html.standalone-staff-boot #view-registration,

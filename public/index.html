@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="robots" content="noindex, nofollow" />
   <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
   <script>
@@ -28,7 +28,7 @@
   <link rel="stylesheet" href="./styles.css" />
   <style id="dynamic-print-page-style">@page { size: A4 portrait; margin: 7mm; }</style>
 </head>
-<body class="h-screen w-screen flex flex-col select-none bg-slate-100 text-slate-900">
+<body class="h-[100dvh] w-screen flex flex-col select-none bg-slate-100 text-slate-900">
 
   <!-- トップヘッダー：レスポンシブ対応＆アカウント連携 -->
   <header class="no-print bg-slate-900 text-white px-2.5 sm:px-4 min-h-[48px] py-1 flex flex-wrap items-center justify-between gap-2 shadow-md z-30 shrink-0">
@@ -229,7 +229,7 @@
   </div>
 
   <!-- メインコンテナ -->
-  <div id="app-shell" class="flex-1 flex overflow-hidden relative">
+  <div id="app-shell" class="flex-1 min-h-0 flex overflow-hidden relative">
 
     <!-- =================================================================== -->
     <!-- 画面0：大会ホーム（軽量ダッシュボード・マイ大会・クイック再開）        -->

@@ -33,6 +33,19 @@
     return typeof firebase !== 'undefined' && Boolean(window.BRACKETFLOW_FIREBASE_CONFIG && window.BRACKETFLOW_FIREBASE_CONFIG.apiKey);
   }
 
+  function formatLocalClockIso(isoStr) {
+    const d = isoStr ? new Date(isoStr) : new Date();
+    if (Number.isNaN(d.getTime())) return '';
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  function formatLocalDateTimeIso(isoStr) {
+    if (!isoStr) return '-';
+    const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return String(isoStr).replace('T', ' ').slice(0, 16);
+    return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
   function initFirebase() {
     if (!isFirebaseReady()) {
       updateCloudStatusUi('local', 'オフライン（ローカル保存）');
@@ -316,7 +329,7 @@
 
       await batch.commit();
       cloud.lastSyncedAt = nowIso;
-      updateCloudStatusUi('synced', `クラウド保存済 (${nowIso.slice(11, 16)})`);
+      updateCloudStatusUi('synced', `クラウド保存済 (${formatLocalClockIso(nowIso)})`);
       attachAdminLiveListener();
       if (typeof window.refreshPublishCloudBanner === 'function') window.refreshPublishCloudBanner();
       if (notifyUser) showToast('クラウドへ保存し、公開URL・スタッフ画面へ即時反映しました', 'success');
@@ -379,7 +392,7 @@
           });
         }
         cloud.lastSyncedAt = remote.updatedAt;
-        updateCloudStatusUi('synced', `他端末より同期 (${remote.updatedAt.slice(11, 16)})`);
+        updateCloudStatusUi('synced', `他端末より同期 (${formatLocalClockIso(remote.updatedAt)})`);
       } finally {
         cloud.suppressRemoteEcho = false;
       }
@@ -445,7 +458,7 @@
 
     listEl.innerHTML = cloud.myTournaments.map((t) => {
       const isCur = t.id === curId;
-      const dt = t.updatedAt ? t.updatedAt.replace('T', ' ').slice(0, 16) : '-';
+      const dt = formatLocalDateTimeIso(t.updatedAt);
       return `
         <div class="p-3 rounded-xl border ${isCur ? 'border-emerald-400 bg-emerald-50/40' : 'border-slate-200 bg-white'} flex items-center justify-between gap-3">
           <div class="min-w-0 flex-1">
@@ -595,8 +608,8 @@
 
     const frame = document.getElementById('spectator-portal-frame');
     if (frame) {
-      frame.className = 'w-full max-w-4xl min-h-screen bg-slate-50 text-slate-900 shadow-none border-0 flex flex-col';
-      frame.parentElement.className = 'flex-1 overflow-auto bg-slate-100 flex justify-center items-start';
+      frame.className = 'w-full max-w-4xl h-full min-h-0 bg-slate-50 text-slate-900 shadow-none border-0 flex flex-col overflow-hidden';
+      frame.parentElement.className = 'flex-1 min-h-0 overflow-hidden bg-slate-100 flex justify-center';
       frame.innerHTML = `<div class="p-10 text-center text-xs font-bold text-slate-500">大会データをリアルタイム読込中...</div>`;
     }
 
@@ -812,7 +825,7 @@
         oop: state.oop || OopEngine.createDefaultOopState(),
         updatedAt: nowIso
       });
-      updateCloudStatusUi('synced', `同期済 (${nowIso.slice(11, 16)})`);
+      updateCloudStatusUi('synced', `同期済 (${formatLocalClockIso(nowIso)})`);
     } catch (err) {
       updateCloudStatusUi('error', '送信エラー');
       showToast('進行状況の送信に失敗しました: ' + (err.message || err), 'error');
