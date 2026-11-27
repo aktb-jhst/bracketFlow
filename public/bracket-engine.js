@@ -1233,6 +1233,63 @@
   }
 
   /**
+   * 同一学校内の重複生徒を検知（名簿リスト・配置枠どちらでも利用可能）
+   */
+  function normalizeStudentNameKey(rawName) {
+    return String(rawName || '').replace(/[\s\u3000]+/g, '').trim();
+  }
+
+  function detectDuplicateStudentsInSlots(slots, size) {
+    const map = {};
+    const limit = Math.min(size || slots.length, slots.length);
+    for (let i = 0; i < limit; i++) {
+      const entry = slots[i];
+      if (!entry || !entry.school) continue;
+      const schoolKey = String(entry.school).trim();
+      if (!schoolKey) continue;
+      ['p1', 'p2'].forEach((field) => {
+        const raw = String(entry[field] || '').trim();
+        const norm = normalizeStudentNameKey(raw);
+        if (!norm) return;
+        const key = `${schoolKey}::${norm}`;
+        if (!map[key]) {
+          map[key] = { school: schoolKey, studentName: raw, normalizedName: norm, occurrences: [] };
+        }
+        map[key].occurrences.push({ slotIdx: i, entry, field });
+      });
+    }
+    return Object.values(map)
+      .filter((item) => item.occurrences.length >= 2)
+      .map((item) => ({
+        school: item.school,
+        studentName: item.studentName,
+        occurrences: item.occurrences,
+        slotIndices: Array.from(new Set(item.occurrences.map((o) => o.slotIdx)))
+      }));
+  }
+
+  function detectDuplicateStudentsInEntries(entries) {
+    const map = {};
+    (entries || []).forEach((entry) => {
+      if (!entry || !entry.school) return;
+      const schoolKey = String(entry.school).trim();
+      if (!schoolKey) return;
+      ['p1', 'p2'].forEach((field) => {
+        const raw = String(entry[field] || '').trim();
+        const norm = normalizeStudentNameKey(raw);
+        if (!norm) return;
+        const key = `${schoolKey}::${norm}`;
+        if (!map[key]) {
+          map[key] = { school: schoolKey, studentName: raw, count: 0, entryIds: [] };
+        }
+        map[key].count += 1;
+        map[key].entryIds.push(entry.id);
+      });
+    });
+    return Object.values(map).filter((item) => item.count >= 2);
+  }
+
+  /**
    * 全通知チェック
    */
   function analyzeBracketAlerts(slots, activeSlotMask, size) {
@@ -1253,6 +1310,7 @@
       .sort((a, b) => b.matches.length - a.matches.length);
 
     const top4Violations = detectTop4PatternViolations(slots, size);
+    const duplicateStudents = detectDuplicateStudentsInSlots(slots, size);
 
     if (size >= 4) {
       for (let base = 0; base < size; base += 4) {
@@ -1283,7 +1341,7 @@
       }
     }
 
-    return { round1SameSchool, tripleSameCards, top4Violations, round2SameSchool };
+    return { round1SameSchool, tripleSameCards, top4Violations, duplicateStudents, round2SameSchool };
   }
 
   return {
@@ -1304,6 +1362,8 @@
     resolveSchoolPriorityMap,
     generateBracket,
     detectTop4PatternViolations,
+    detectDuplicateStudentsInSlots,
+    detectDuplicateStudentsInEntries,
     analyzeBracketAlerts
   };
 });

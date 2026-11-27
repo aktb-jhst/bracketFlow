@@ -103,8 +103,11 @@
 
     if (cloud.user) {
       if (btnLogin) btnLogin.classList.add('hidden');
-      if (userBox) userBox.classList.remove('hidden');
-      if (userName) userName.textContent = cloud.user.displayName || cloud.user.email || 'ログイン中';
+      if (userBox) {
+        userBox.classList.remove('hidden');
+        userBox.classList.add('flex');
+      }
+      if (userName) userName.textContent = cloud.user.displayName || cloud.user.email || '';
       if (userAvatar) {
         if (cloud.user.photoURL) {
           userAvatar.src = cloud.user.photoURL;
@@ -115,7 +118,10 @@
       }
     } else {
       if (btnLogin) btnLogin.classList.remove('hidden');
-      if (userBox) userBox.classList.add('hidden');
+      if (userBox) {
+        userBox.classList.add('hidden');
+        userBox.classList.remove('flex');
+      }
     }
   }
 

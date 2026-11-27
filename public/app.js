@@ -126,7 +126,15 @@ const state = {
     round1SameSchool: [],
     tripleSameCards: [],
     top4Violations: [],
+    duplicateStudents: [],
     round2SameSchool: []
+  },
+  ignoredAlerts: {
+    round1SameSchool: false,
+    tripleSameCards: false,
+    top4Violations: false,
+    duplicateStudents: false,
+    round2SameSchool: false
   },
   history: [],
   future: [],
@@ -175,6 +183,7 @@ function saveToLocalStorage() {
       results: state.results,
       consolation: state.consolation,
       oop: state.oop,
+      ignoredAlerts: state.ignoredAlerts,
       layoutMode: state.layoutMode,
       printMode: state.printMode,
       printOrientation: state.printOrientation
@@ -212,6 +221,13 @@ function loadFromLocalStorage() {
     if (typeof OopEngine !== 'undefined') {
       state.oop = OopEngine.createDefaultOopState(data.oop);
     }
+    state.ignoredAlerts = Object.assign({
+      round1SameSchool: false,
+      tripleSameCards: false,
+      top4Violations: false,
+      duplicateStudents: false,
+      round2SameSchool: false
+    }, data.ignoredAlerts || {});
     if (data.layoutMode) state.layoutMode = data.layoutMode;
     if (data.printMode) state.printMode = data.printMode;
     if (data.printOrientation) state.printOrientation = data.printOrientation;
@@ -1554,8 +1570,14 @@ function renderPrecheckSummary() {
     .map(([shortSc, set]) => ({ shortSc, raws: Array.from(set) }));
   const multiSeedSchools = Object.keys(schoolTop4Seeds).filter((sc) => schoolTop4Seeds[sc] >= 2);
   const over8Schools = Object.keys(schoolTotals).filter((sc) => schoolTotals[sc] > 8);
+  const dupStudents = BracketEngine.detectDuplicateStudentsInEntries(state.entries);
 
   const badges = [];
+  if (dupStudents.length > 0) {
+    const firstSc = dupStudents[0].school;
+    const names = dupStudents.slice(0, 4).map((d) => `${formatSchoolShortName(d.school)}:${d.studentName}`).join(', ');
+    badges.push(`<button onclick="toggleRegSchoolFilter('${escapeJs(firstSc)}')" class="px-1.5 py-0.5 rounded bg-pink-100 hover:bg-pink-200 text-rose-900 border border-rose-300 font-bold transition" title="同一校内の重複生徒: ${escapeHtml(names)}">⚠ 同一校 重複生徒: ${dupStudents.length}名</button>`);
+  }
   if (dupRankSchools.size > 0) {
     const firstSc = Array.from(dupRankSchools)[0];
     badges.push(`<button onclick="toggleRegSchoolFilter('${escapeJs(firstSc)}')" class="px-1.5 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-800 border border-rose-300 font-bold transition" title="クリックで該当校を絞り込み">⚠ 番手重複: ${dupRankSchools.size}校</button>`);
@@ -1571,8 +1593,8 @@ function renderPrecheckSummary() {
   if (over8Schools.length > 0) {
     badges.push(`<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">8組超: ${over8Schools.length}校</span>`);
   }
-  if (dupRankSchools.size === 0 && aliasCollisionGroups.length === 0) {
-    badges.push(`<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold">✓ 番手重複・表記ゆれなし</span>`);
+  if (dupStudents.length === 0 && dupRankSchools.size === 0 && aliasCollisionGroups.length === 0) {
+    badges.push(`<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold">✓ 重複・表記ゆれなし</span>`);
   }
 
   box.innerHTML = `
@@ -1822,49 +1844,136 @@ function generateTournamentFromEntries(recordHistory = true, notifyUser = false)
   saveToLocalStorage();
 }
 
+function toggleIgnoreAlertCategory(catKey, forceVal) {
+  if (!state.ignoredAlerts) {
+    state.ignoredAlerts = {
+      round1SameSchool: false,
+      tripleSameCards: false,
+      top4Violations: false,
+      duplicateStudents: false,
+      round2SameSchool: false
+    };
+  }
+  state.ignoredAlerts[catKey] = (typeof forceVal === 'boolean') ? forceVal : !state.ignoredAlerts[catKey];
+  saveToLocalStorage();
+  refreshAlerts(false);
+  renderSheet();
+}
+
+function resetAllIgnoredAlerts() {
+  state.ignoredAlerts = {
+    round1SameSchool: false,
+    tripleSameCards: false,
+    top4Violations: false,
+    duplicateStudents: false,
+    round2SameSchool: false
+  };
+  saveToLocalStorage();
+  refreshAlerts(false);
+  renderSheet();
+}
+
 // =========================================================================
-// 3種通知チェック（1回戦同校 / 1回戦同一カード3対戦以上 / 上位4番手規則性外）
+// 通知チェック（1回戦同校 / 同一カード3対戦+ / 上位4番手・シード外 / 同一校重複生徒）
 // =========================================================================
 function refreshAlerts(notifyOnIssue = false) {
   state.alerts = BracketEngine.analyzeBracketAlerts(state.slots, state.activeSlotMask, state.bracketSize);
-  const { round1SameSchool, tripleSameCards, top4Violations, round2SameSchool } = state.alerts;
+  const ign = state.ignoredAlerts || {};
+  const raw = state.alerts;
 
-  const criticalCount = round1SameSchool.length + tripleSameCards.length + top4Violations.length;
+  const round1SameSchool = ign.round1SameSchool ? [] : (raw.round1SameSchool || []);
+  const tripleSameCards = ign.tripleSameCards ? [] : (raw.tripleSameCards || []);
+  const top4Violations = ign.top4Violations ? [] : (raw.top4Violations || []);
+  const duplicateStudents = ign.duplicateStudents ? [] : (raw.duplicateStudents || []);
+  const round2SameSchool = ign.round2SameSchool ? [] : (raw.round2SameSchool || []);
+
+  const mutedKeys = ['round1SameSchool', 'tripleSameCards', 'top4Violations', 'duplicateStudents', 'round2SameSchool'].filter((k) => Boolean(ign[k]));
+  const criticalCount = round1SameSchool.length + tripleSameCards.length + top4Violations.length + duplicateStudents.length;
   const badge = document.getElementById('btn-conflict-badge');
   const listItems = document.getElementById('conflict-list-items');
   const drawer = document.getElementById('conflict-drawer');
 
   if (badge) {
+    const muteSuffix = mutedKeys.length > 0 ? ` <span class="text-[10px] opacity-80">(${mutedKeys.length}種別無視中)</span>` : '';
     if (criticalCount > 0) {
-      const hasR1 = round1SameSchool.length > 0;
-      badge.className = hasR1
+      const hasSevere = round1SameSchool.length > 0 || duplicateStudents.length > 0;
+      badge.className = hasSevere
         ? 'px-2.5 py-1 text-xs rounded-md font-bold inline-flex items-center gap-1.5 border bg-rose-100 hover:bg-rose-200 text-rose-800 border-rose-300 transition'
         : 'px-2.5 py-1 text-xs rounded-md font-bold inline-flex items-center gap-1.5 border bg-orange-100 hover:bg-orange-200 text-orange-900 border-orange-300 transition';
       const parts = [];
+      if (duplicateStudents.length > 0) parts.push(`重複生徒 ${duplicateStudents.length}`);
       if (round1SameSchool.length > 0) parts.push(`1回戦同校 ${round1SameSchool.length}`);
       if (tripleSameCards.length > 0) parts.push(`同一カード3戦+ ${tripleSameCards.length}`);
       if (top4Violations.length > 0) parts.push(`上位4番手外 ${top4Violations.length}`);
-      badge.innerHTML = `<span>⚠ 通知: ${parts.join(' / ')}</span>`;
+      badge.innerHTML = `<span>⚠ 通知: ${parts.join(' / ')}</span>${muteSuffix}`;
     } else if (round2SameSchool.length > 0) {
       badge.className = 'px-2.5 py-1 text-xs rounded-md font-bold inline-flex items-center gap-1.5 border bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300 transition';
-      badge.innerHTML = `<span>✓ 規則OK</span><span class="text-amber-700 font-semibold">(2回戦接近 ${round2SameSchool.length}件)</span>`;
+      badge.innerHTML = `<span>✓ 規則OK</span><span class="text-amber-700 font-semibold">(2回戦接近 ${round2SameSchool.length}件)</span>${muteSuffix}`;
     } else {
       badge.className = 'px-2.5 py-1 text-xs rounded-md font-bold inline-flex items-center gap-1 border bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200 transition';
-      badge.innerHTML = `<span>✓ 通知なし・規則OK</span>`;
+      badge.innerHTML = `<span>✓ 通知なし・規則OK</span>${muteSuffix}`;
     }
   }
 
-  // ドロワー内詳細レンダリング
+  // ドロワー内詳細レンダリング（通知停止／無視のトグルバーを常時表示）
   if (listItems) {
+    const toggleDefs = [
+      { key: 'duplicateStudents', label: '重複生徒', count: (raw.duplicateStudents || []).length },
+      { key: 'round1SameSchool', label: '1回戦同校', count: (raw.round1SameSchool || []).length },
+      { key: 'tripleSameCards', label: '同一カード3戦+', count: (raw.tripleSameCards || []).length },
+      { key: 'top4Violations', label: '上位4番手・シード外', count: (raw.top4Violations || []).length },
+      { key: 'round2SameSchool', label: '2回戦接近', count: (raw.round2SameSchool || []).length }
+    ];
+
+    let html = `
+      <div class="p-2 rounded-lg bg-slate-50 border border-slate-200 flex flex-wrap items-center justify-between gap-2">
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="text-[10px] font-bold text-slate-500">通知ON/無視:</span>
+          ${toggleDefs.map((d) => {
+            const isMuted = Boolean(ign[d.key]);
+            return `<button onclick="toggleIgnoreAlertCategory('${d.key}')"
+                            class="px-2 py-0.5 rounded text-[10px] font-bold border transition ${isMuted
+                              ? 'bg-slate-200 text-slate-500 border-slate-300 line-through'
+                              : 'bg-white text-slate-800 border-slate-300 hover:bg-slate-100'}"
+                            title="${isMuted ? 'クリックで通知を再開' : 'クリックでこの通知を無視（停止）'}">
+                      ${d.label}${d.count > 0 ? `(${d.count})` : ''} ${isMuted ? '[無視中]' : ''}
+                    </button>`;
+          }).join('')}
+        </div>
+        ${mutedKeys.length > 0 ? `<button onclick="resetAllIgnoredAlerts()" class="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold">すべて通知ONに戻す</button>` : ''}
+      </div>
+    `;
+
     if (criticalCount === 0 && round2SameSchool.length === 0) {
-      listItems.innerHTML = `<div class="text-emerald-700 font-semibold">1回戦同校対決・同一カード3対戦以上・上位4番手規則性違反はいずれも発生していません。</div>`;
+      html += `<div class="text-emerald-700 font-semibold px-1 pt-1">有効な通知・ルール違反は発生していません。${mutedKeys.length > 0 ? '（上のボタンから無視中の通知をいつでも再開できます）' : ''}</div>`;
     } else {
-      let html = '';
+      // 0. 同一校内の重複生徒
+      if (duplicateStudents.length > 0) {
+        html += `<div class="p-2 rounded-lg bg-pink-50 border border-rose-300">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <div class="text-[11px] font-bold text-rose-900">【重複生徒】同一校内に重複登録された生徒がいます（${duplicateStudents.length}名・確認用に自動塗りつぶし済／配布用印刷時は自動で非表示）</div>
+            <button onclick="toggleIgnoreAlertCategory('duplicateStudents', true)" class="px-1.5 py-0.5 rounded bg-white hover:bg-rose-100 border border-rose-200 text-[10px] font-bold text-rose-700 shrink-0">この通知を無視</button>
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            ${duplicateStudents.map((d) => `
+              <div class="flex flex-wrap items-center gap-1 bg-white px-2 py-1 rounded border border-rose-200">
+                <span class="font-extrabold text-rose-900">${escapeHtml(formatSchoolShortName(d.school))}：${escapeHtml(d.studentName)}（${d.occurrences.length}件）</span>
+                ${d.slotIndices.map((sIdx) => `
+                  <button onclick="jumpToSlot(${sIdx})" class="px-1.5 py-0.2 bg-rose-50 hover:bg-rose-100 border border-rose-300 rounded text-[10px] font-bold text-rose-800">
+                    ${escapeHtml(formatSchoolRankBadge(state.slots[sIdx]))}
+                  </button>`).join('')}
+              </div>`).join('')}
+          </div>
+        </div>`;
+      }
 
       // 1. 1回戦同校対決
       if (round1SameSchool.length > 0) {
         html += `<div class="p-2 rounded-lg bg-rose-50 border border-rose-200">
-          <div class="text-[11px] font-bold text-rose-800 mb-1">【警告】1回戦の同校対決（${round1SameSchool.length}件）</div>
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <div class="text-[11px] font-bold text-rose-800">【警告】1回戦の同校対決（${round1SameSchool.length}件）</div>
+            <button onclick="toggleIgnoreAlertCategory('round1SameSchool', true)" class="px-1.5 py-0.5 rounded bg-white hover:bg-rose-100 border border-rose-200 text-[10px] font-bold text-rose-700 shrink-0">この通知を無視</button>
+          </div>
           <div class="flex flex-wrap gap-1.5">
             ${round1SameSchool.map((c) => `
               <button onclick="jumpToSlot(${c.slotA})" class="px-2 py-1 bg-white hover:bg-rose-100 border border-rose-300 rounded text-rose-900 font-semibold transition">
@@ -1877,7 +1986,10 @@ function refreshAlerts(notifyOnIssue = false) {
       // 2. 1回戦同一カード3対戦以上
       if (tripleSameCards.length > 0) {
         html += `<div class="p-2 rounded-lg bg-purple-50 border border-purple-200">
-          <div class="text-[11px] font-bold text-purple-900 mb-1">【警告】1回戦 同一カード対決が3対戦以上（${tripleSameCards.length}カード）</div>
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <div class="text-[11px] font-bold text-purple-900">【警告】1回戦 同一カード対決が3対戦以上（${tripleSameCards.length}カード）</div>
+            <button onclick="toggleIgnoreAlertCategory('tripleSameCards', true)" class="px-1.5 py-0.5 rounded bg-white hover:bg-purple-100 border border-purple-200 text-[10px] font-bold text-purple-800 shrink-0">この通知を無視</button>
+          </div>
           <div class="space-y-1.5">
             ${tripleSameCards.map((card) => `
               <div class="flex flex-wrap items-center gap-1.5">
@@ -1894,7 +2006,10 @@ function refreshAlerts(notifyOnIssue = false) {
       // 3. 上位4番手規則性ルール外（シード起因含む）
       if (top4Violations.length > 0) {
         html += `<div class="p-2 rounded-lg bg-orange-50 border border-orange-200">
-          <div class="text-[11px] font-bold text-orange-900 mb-1">【通知】上位4番手の規則性ルール外（${top4Violations.length}件）</div>
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <div class="text-[11px] font-bold text-orange-900">【通知】上位4番手の規則性ルール外（${top4Violations.length}件）</div>
+            <button onclick="toggleIgnoreAlertCategory('top4Violations', true)" class="px-1.5 py-0.5 rounded bg-white hover:bg-orange-100 border border-orange-200 text-[10px] font-bold text-orange-800 shrink-0">この通知を無視</button>
+          </div>
           <div class="flex flex-wrap gap-1.5">
             ${top4Violations.map((v) => {
               const sideJa = (s) => (s === 'in' ? 'in(内)' : 'out(外)');
@@ -1916,7 +2031,10 @@ function refreshAlerts(notifyOnIssue = false) {
       // 4. 参考：2回戦同校接近
       if (round2SameSchool.length > 0) {
         html += `<div class="p-2 rounded-lg bg-amber-50/70 border border-amber-200">
-          <div class="text-[11px] font-bold text-amber-800 mb-1">【参考】2回戦（4枠内）での同校接近（${round2SameSchool.length}件）</div>
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <div class="text-[11px] font-bold text-amber-800">【参考】2回戦（4枠内）での同校接近（${round2SameSchool.length}件）</div>
+            <button onclick="toggleIgnoreAlertCategory('round2SameSchool', true)" class="px-1.5 py-0.5 rounded bg-white hover:bg-amber-100 border border-amber-200 text-[10px] font-bold text-amber-800 shrink-0">この通知を無視</button>
+          </div>
           <div class="flex flex-wrap gap-1.5">
             ${round2SameSchool.map((c) => `
               <button onclick="jumpToSlot(${c.slotA})" class="px-2 py-0.5 bg-white hover:bg-amber-100 border border-amber-300 rounded text-amber-900 font-medium transition">
@@ -1925,9 +2043,8 @@ function refreshAlerts(notifyOnIssue = false) {
           </div>
         </div>`;
       }
-
-      listItems.innerHTML = html;
     }
+    listItems.innerHTML = html;
   }
 
   // 重要な通知がある場合は自動でトースト表示＆ドロワー展開
@@ -1935,13 +2052,14 @@ function refreshAlerts(notifyOnIssue = false) {
     if (criticalCount > 0) {
       if (drawer) drawer.classList.remove('hidden');
       const msgs = [];
+      if (duplicateStudents.length > 0) msgs.push(`同一校重複生徒 ${duplicateStudents.length}名`);
       if (round1SameSchool.length > 0) msgs.push(`1回戦同校対決 ${round1SameSchool.length}件`);
       if (tripleSameCards.length > 0) msgs.push(`1回戦同一カード3対戦以上 ${tripleSameCards.length}件`);
       if (top4Violations.length > 0) {
         const seedCaused = top4Violations.some((v) => v.causedBySeed);
         msgs.push(`上位4番手ルール外 ${top4Violations.length}件${seedCaused ? '（シード要因含む）' : ''}`);
       }
-      showToast(`通知：${msgs.join(' / ')}`, round1SameSchool.length > 0 ? 'error' : 'warn', 4200);
+      showToast(`通知：${msgs.join(' / ')}`, (round1SameSchool.length > 0 || duplicateStudents.length > 0) ? 'error' : 'warn', 4200);
     } else {
       if (drawer) drawer.classList.add('hidden');
       showToast('規則通りに配置しました（通知・違反なし）', 'success');
@@ -2527,18 +2645,32 @@ function renderSheet() {
   const totalRounds = Math.log2(size);
   const showRankBadge = state.showRankBadge;
 
+  const ign = state.ignoredAlerts || {};
   const alertSets = {
     r1: new Set(),
     triple: new Set(),
     top4: new Set(),
+    dupStudent: new Set(),
     r2: new Set()
   };
-  state.alerts.round1SameSchool.forEach((c) => { alertSets.r1.add(c.slotA); alertSets.r1.add(c.slotB); });
-  state.alerts.tripleSameCards.forEach((card) => {
-    card.matches.forEach((m) => { alertSets.triple.add(m.slotA); alertSets.triple.add(m.slotB); });
+  if (!ign.round1SameSchool) {
+    (state.alerts.round1SameSchool || []).forEach((c) => { alertSets.r1.add(c.slotA); alertSets.r1.add(c.slotB); });
+  }
+  if (!ign.tripleSameCards) {
+    (state.alerts.tripleSameCards || []).forEach((card) => {
+      card.matches.forEach((m) => { alertSets.triple.add(m.slotA); alertSets.triple.add(m.slotB); });
+    });
+  }
+  if (!ign.top4Violations) {
+    (state.alerts.top4Violations || []).forEach((v) => { alertSets.top4.add(v.slotIdx); });
+  }
+  // 同一校内の重複生徒は初期状態で自動塗りつぶし（配布用印刷時はCSSで自動停止）
+  (state.alerts.duplicateStudents || []).forEach((d) => {
+    (d.slotIndices || []).forEach((sIdx) => alertSets.dupStudent.add(sIdx));
   });
-  state.alerts.top4Violations.forEach((v) => { alertSets.top4.add(v.slotIdx); });
-  state.alerts.round2SameSchool.forEach((c) => { alertSets.r2.add(c.slotA); alertSets.r2.add(c.slotB); });
+  if (!ign.round2SameSchool) {
+    (state.alerts.round2SameSchool || []).forEach((c) => { alertSets.r2.add(c.slotA); alertSets.r2.add(c.slotB); });
+  }
 
   const tree = [];
   tree[0] = [];
@@ -2808,15 +2940,17 @@ function hasReachedByWin(node) {
 function getSlotAlertClass(slotIdx, isSelected, isSearchCurr, isSearchHit, alertSets, hasEntry) {
   const fillKey = state.slotFills[String(slotIdx)];
   const fillCls = fillKey ? `slot-custom-fill fill-${fillKey} ` : '';
-  if (isSelected) return `${fillCls}selected-slot `;
-  if (isSearchCurr) return `${fillCls}search-current-slot `;
-  if (isSearchHit) return `${fillCls}search-hit-slot `;
-  if (alertSets.r1.has(slotIdx)) return `${fillCls}same-school-r1-alert `;
-  if (alertSets.triple.has(slotIdx)) return `${fillCls}triple-card-alert `;
-  if (alertSets.top4.has(slotIdx)) return `${fillCls}top4-rule-alert `;
-  if (alertSets.r2.has(slotIdx)) return `${fillCls}same-school-r2-alert `;
-  if (!hasEntry) return `${fillCls}empty-slot-placeholder `;
-  return fillCls;
+  const dupCls = (alertSets.dupStudent && alertSets.dupStudent.has(slotIdx)) ? 'duplicate-student-fill ' : '';
+  const baseCls = `${dupCls}${fillCls}`;
+  if (isSelected) return `${baseCls}selected-slot `;
+  if (isSearchCurr) return `${baseCls}search-hit-slot search-current-slot `;
+  if (isSearchHit) return `${baseCls}search-hit-slot `;
+  if (alertSets.r1.has(slotIdx)) return `${baseCls}same-school-r1-alert `;
+  if (alertSets.triple.has(slotIdx)) return `${baseCls}triple-card-alert `;
+  if (alertSets.top4.has(slotIdx)) return `${baseCls}top4-rule-alert `;
+  if (alertSets.r2.has(slotIdx)) return `${baseCls}same-school-r2-alert `;
+  if (!hasEntry) return `${baseCls}empty-slot-placeholder `;
+  return baseCls;
 }
 
 function renderDualWingBracket(sheet, tree, size, totalRounds, rowHeight, labelWidth, stepWidth, showRankBadge, alertSets) {

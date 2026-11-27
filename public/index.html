@@ -33,7 +33,7 @@
   <!-- トップヘッダー：レスポンシブ対応＆アカウント連携 -->
   <header class="no-print bg-slate-900 text-white px-2.5 sm:px-4 min-h-[48px] py-1 flex flex-wrap items-center justify-between gap-2 shadow-md z-30 shrink-0">
     <!-- 左側：ロゴ＆画面切替 -->
-    <div class="flex items-center gap-2 min-w-0 overflow-x-auto">
+    <div class="flex items-center gap-2 min-w-0 flex-wrap">
       <button type="button" onclick="switchMainView('home')" class="flex items-center gap-2 shrink-0 text-left hover:opacity-90 transition" title="大会ホームへ戻る">
         <span class="w-7 h-7 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-600 text-slate-950 flex items-center justify-center shadow-sm" aria-hidden="true">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
@@ -99,22 +99,22 @@
         <span>ログイン</span>
       </button>
 
-      <div id="header-user-box" class="hidden flex items-center gap-1 bg-slate-800 border border-slate-700 rounded-md p-0.5">
+      <div id="header-user-box" class="hidden items-center gap-1 bg-slate-800 border border-slate-700 rounded-md p-0.5">
         <button onclick="openMyTournamentsModal()"
                 class="px-2 py-0.5 text-[11px] font-bold rounded bg-indigo-600 hover:bg-indigo-500 text-white transition flex items-center gap-1 whitespace-nowrap"
                 title="クラウド保存した過去の大会一覧を開く">
-          <img id="header-user-avatar" src="" alt="" class="hidden w-4 h-4 rounded-full" />
+          <img id="header-user-avatar" src="" alt="" referrerpolicy="no-referrer" onerror="this.classList.add('hidden')" class="hidden w-4 h-4 rounded-full" />
           <span>マイ大会</span>
         </button>
         <button onclick="syncNowToCloud()"
-                class="px-1.5 py-0.5 text-[10px] font-bold rounded text-emerald-300 hover:bg-slate-700 transition"
+                class="px-1.5 py-0.5 text-[10px] font-bold rounded text-emerald-300 hover:bg-slate-700 transition whitespace-nowrap"
                 title="今すぐクラウド保存・公開ページ同期">
           同期
         </button>
         <button onclick="signOutGoogle()"
-                class="hidden md:inline-block px-1.5 py-0.5 text-[10px] font-bold rounded text-slate-400 hover:text-white hover:bg-slate-700 transition"
-                title="ログアウト">
-          <span id="header-user-name" class="max-w-[72px] truncate inline-block align-bottom"></span> ✕
+                class="px-1.5 py-0.5 text-[10px] font-bold rounded text-slate-300 hover:text-white hover:bg-slate-700 transition whitespace-nowrap"
+                title="Googleアカウントからログアウト">
+          <span id="header-user-name" class="hidden xl:inline-block max-w-[68px] truncate align-bottom mr-1 text-slate-400"></span>ログアウト
         </button>
       </div>
 
@@ -838,8 +838,11 @@
             </button>
 
             <button id="btn-oop-add-blank" onclick="selectNewOopBlankForInsert()"
+                    draggable="true"
+                    ondragstart="handleOopDragStart(event, '__NEW_BLANK__')"
+                    ondragend="handleOopDragEnd(event)"
                     class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 transition"
-                    title="進行を揃えるための意図的な空き枠（進行調整枠）を任意の位置へ挿入">
+                    title="クリックして複数の＋位置に連続挿入、またはそのままコートへドラッグできます">
               ＋ 空き枠
             </button>
 
@@ -1057,7 +1060,7 @@
           <div class="p-3 rounded-xl bg-amber-50/70 border border-amber-200 space-y-2">
             <div class="flex items-center justify-between">
               <span class="text-xs font-bold text-amber-950">会場運営スタッフ用 PIN（種目別）</span>
-              <span class="text-[10px] text-amber-800 bg-amber-200/70 px-1.5 py-0.5 rounded font-bold">フェーズ2同期対応</span>
+              <span class="text-[10px] text-amber-800 bg-amber-200/70 px-1.5 py-0.5 rounded font-bold">別会場リアルタイム同期</span>
             </div>
             <div id="pub-staff-pins-list" class="space-y-1.5 max-h-36 overflow-y-auto"></div>
           </div>
@@ -1130,17 +1133,38 @@
     </div>
   </div>
 
-  <!-- 審判メモ編集モーダル -->
+  <!-- 審判メモ編集モーダル（選手登録番号から引用指定対応） -->
   <div id="umpire-modal" class="no-print hidden fixed inset-0 bg-slate-900/50 backdrop-blur-[1px] z-50 flex items-center justify-center p-4">
-    <div class="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-sm w-full p-5 space-y-3">
+    <div class="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-5 space-y-3">
       <div class="flex items-center justify-between border-b border-slate-100 pb-2">
         <h3 class="text-sm font-bold text-slate-800">審判割当メモの編集</h3>
         <button onclick="closeUmpireModal()" class="text-slate-400 hover:text-slate-700 font-bold">✕</button>
       </div>
       <div id="umpire-modal-match-label" class="text-xs font-bold text-slate-600 bg-slate-50 px-2.5 py-1.5 rounded border border-slate-200"></div>
+
+      <!-- 選手登録番号（トーナメント番号）から引用 -->
+      <div class="p-2.5 rounded-lg bg-blue-50/70 border border-blue-200 space-y-2">
+        <div class="text-[11px] font-bold text-blue-900">選手登録番号（トーナメント番号）から指定</div>
+        <div class="flex items-center gap-1.5">
+          <input type="number" id="umpire-slot-num-input" min="1" max="256" placeholder="番号 (例: 3)"
+                 oninput="previewUmpireByNumber(this.value)"
+                 onkeydown="if(event.key==='Enter'){ event.preventDefault(); applyUmpireByNumber(false); }"
+                 class="w-28 px-2.5 py-1 text-xs font-bold border border-blue-300 rounded-md bg-white focus:outline-none focus:border-blue-500" />
+          <button type="button" onclick="applyUmpireByNumber(false)"
+                  class="px-2.5 py-1 text-[11px] font-bold bg-blue-600 hover:bg-blue-500 text-white rounded-md transition">反映</button>
+          <button type="button" onclick="applyUmpireByNumber(true)"
+                  class="px-2 py-1 text-[11px] font-bold bg-white hover:bg-blue-100 text-blue-800 border border-blue-300 rounded-md transition" title="現在の審判メモに追記">追加</button>
+        </div>
+        <div id="umpire-slot-num-preview" class="text-[11px] font-semibold text-blue-800 min-h-[16px]"></div>
+        <select id="umpire-pair-select" onchange="applyUmpireFromSelect(this.value)"
+                class="w-full px-2 py-1 text-[11px] font-bold border border-blue-200 rounded-md bg-white text-slate-800 focus:outline-none">
+          <option value="">一覧から登録番号・ペアを選択...</option>
+        </select>
+      </div>
+
       <div>
-        <label class="block text-[11px] font-bold text-slate-600 mb-1">審判メモ（空欄にすると自動ルールに戻ります）</label>
-        <input type="text" id="umpire-modal-input" placeholder="例：星見二 佐藤・鈴木 ／ 本部審判"
+        <label class="block text-[11px] font-bold text-slate-600 mb-1">審判メモ（直接編集も可・空欄で自動ルールに戻る）</label>
+        <input type="text" id="umpire-modal-input" placeholder="例：3番 斎藤 碧・清水 奏汰（風見四） ／ 本部審判"
                class="w-full px-3 py-1.5 text-xs font-bold border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500" />
       </div>
       <div class="flex items-center justify-between pt-2 border-t border-slate-100">

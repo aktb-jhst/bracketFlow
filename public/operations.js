@@ -77,6 +77,13 @@
         results: {}
       }),
       oop: OopEngine.createDefaultOopState(state.oop),
+      ignoredAlerts: cloneDeep(state.ignoredAlerts || {
+        round1SameSchool: false,
+        tripleSameCards: false,
+        top4Violations: false,
+        duplicateStudents: false,
+        round2SameSchool: false
+      }),
       layoutMode: state.layoutMode || 'dual',
       printMode: state.printMode || 'distribution',
       printOrientation: state.printOrientation || 'portrait'
@@ -106,6 +113,13 @@
       results: {}
     };
     state.oop = OopEngine.createDefaultOopState(data.oop);
+    state.ignoredAlerts = Object.assign({
+      round1SameSchool: false,
+      tripleSameCards: false,
+      top4Violations: false,
+      duplicateStudents: false,
+      round2SameSchool: false
+    }, data.ignoredAlerts || {});
     state.layoutMode = data.layoutMode || 'dual';
     state.printMode = data.printMode || 'distribution';
     state.printOrientation = data.printOrientation || 'portrait';
@@ -675,7 +689,7 @@
     const moveHint = document.getElementById('oop-move-hint');
     if (moveHint) {
       if (opsUi.oopSelectedMoveKey === '__NEW_BLANK__') {
-        moveHint.innerHTML = `<span class="text-amber-700 font-bold">空き枠を挿入する位置（試合の間の「＋」）をクリックしてください</span>`;
+        moveHint.innerHTML = `<span class="text-amber-700 font-bold">空き枠を連続挿入中：複数の「＋」をクリックして何個でも設置できます（もう一度「＋ 空き枠」またはEscで終了）</span>`;
       } else if (opsUi.oopSelectedMoveKey && OopEngine.isBlankKey(opsUi.oopSelectedMoveKey)) {
         moveHint.innerHTML = `<span class="text-blue-700 font-bold">空き枠の移動先（「＋」）をクリックしてください</span>`;
       } else if (opsUi.oopSelectedMoveKey && catalog.matchMap[opsUi.oopSelectedMoveKey]) {
@@ -971,7 +985,8 @@
           <div class="text-xs font-extrabold text-amber-900 truncate" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
           <div class="text-[9.5px] text-amber-700/80 mt-0.5">この列は意図的に空けて進行を揃えます</div>
         </div>
-        <div class="flex justify-end">
+        <div class="flex items-center justify-between gap-1">
+          <button onclick="duplicateOopBlankRight('${courtKey}', ${item.indexInCourt})" class="px-2 py-0.5 text-[9.5px] font-bold bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded text-amber-950" title="すぐ右隣に同じ空き枠をもう1つ追加">＋1枠</button>
           <button onclick="editOopBlankLabel('${escapeJs(bKey)}')" class="px-2 py-0.5 text-[9.5px] font-bold bg-white hover:bg-amber-100 border border-amber-300 rounded text-amber-900">ラベル変更</button>
         </div>
       </div>
@@ -1683,6 +1698,7 @@
   function moveOopMatchToCourt(matchKey, targetCourtKey, insertIndex) {
     if (!matchKey || !state.oop || !state.oop.courts[targetCourtKey]) return;
     pushOopUndo();
+    const isContinuousBlank = (matchKey === '__NEW_BLANK__' && opsUi.oopSelectedMoveKey === '__NEW_BLANK__');
     let keyToInsert = matchKey;
     if (matchKey === '__NEW_BLANK__') {
       keyToInsert = `__blank_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
@@ -1692,18 +1708,36 @@
     const moved = OopEngine.moveMatchInCourts(state.oop.courts, keyToInsert, targetCourtKey, insertIndex);
     state.oop.courts = moved.courts;
     state.oop.updatedAt = new Date().toISOString();
-    opsUi.oopSelectedMoveKey = null;
+    // 空き枠クリック連続モード時は解除せず続けて複数設置できるようにする
+    if (!isContinuousBlank) {
+      opsUi.oopSelectedMoveKey = null;
+      document.body.classList.remove('oop-move-mode-active');
+    }
     document.body.classList.remove('oop-dragging-active');
-    document.body.classList.remove('oop-move-mode-active');
     saveToLocalStorage();
     renderOopView();
     showToast(
       OopEngine.isBlankKey(keyToInsert)
-        ? `コート${targetCourtKey}の第${moved.insertedIndex + 1}試合位置へ空き枠を挿入しました`
+        ? `コート${targetCourtKey}の第${moved.insertedIndex + 1}試合位置へ空き枠を挿入しました${isContinuousBlank ? '（続けて挿入可・Esc終了）' : ''}`
         : `コート${targetCourtKey}の第${moved.insertedIndex + 1}試合位置へ移動しました`,
       'info',
       2000
     );
+  }
+
+  function duplicateOopBlankRight(courtKey, idx) {
+    if (!state.oop || !state.oop.courts[courtKey]) return;
+    pushOopUndo();
+    const origKey = state.oop.courts[courtKey][idx];
+    const origLabel = (state.oop.blankLabels && state.oop.blankLabels[origKey]) || '空き（進行調整）';
+    const newKey = `__blank_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    if (!state.oop.blankLabels) state.oop.blankLabels = {};
+    state.oop.blankLabels[newKey] = origLabel;
+    state.oop.courts[courtKey].splice(idx + 1, 0, newKey);
+    state.oop.updatedAt = new Date().toISOString();
+    saveToLocalStorage();
+    renderOopView();
+    showToast(`コート${courtKey}に空き枠を追加しました`, 'info', 1600);
   }
 
   function toggleOopHideFinished() {
@@ -1848,7 +1882,24 @@
     showToast(`未割当${unassigned.length}試合を空きコートへ投入しました`, 'success');
   }
 
-  // 審判メモ編集モーダル
+  // 選手登録番号（トーナメント表示番号 1..N）からペア一覧を構築
+  function buildActiveSlotNumberList() {
+    const list = [];
+    let num = 1;
+    const size = state.bracketSize || (state.slots ? state.slots.length : 0);
+    for (let i = 0; i < size; i++) {
+      if (!state.activeSlotMask[i]) continue;
+      const entry = state.slots[i];
+      if (entry) {
+        const pairStr = OopEngine.formatSpectatorPairName(entry, 'full', formatSchoolShortName);
+        list.push({ num, slotIdx: i, entry, label: `${num}番 ${pairStr}` });
+      }
+      num++;
+    }
+    return list;
+  }
+
+  // 審判メモ編集モーダル（登録番号から引用指定対応）
   function openUmpireModal(matchKey) {
     const catalog = getActiveMatchCatalog('full');
     const m = catalog.matchMap[matchKey];
@@ -1856,8 +1907,69 @@
     opsUi.umpireModalMatchKey = matchKey;
     document.getElementById('umpire-modal-match-label').textContent = `${m.matchNo}（${m.roundLabel}）：${m.p1Label} vs ${m.p2Label}`;
     document.getElementById('umpire-modal-input').value = (state.oop.umpires && state.oop.umpires[matchKey]) || '';
+
+    const numInput = document.getElementById('umpire-slot-num-input');
+    const previewEl = document.getElementById('umpire-slot-num-preview');
+    const selEl = document.getElementById('umpire-pair-select');
+    if (numInput) numInput.value = '';
+    if (previewEl) previewEl.textContent = 'トーナメントの番号を入力すると該当ペアが表示されます';
+    if (selEl) {
+      const pairs = buildActiveSlotNumberList();
+      selEl.innerHTML = `<option value="">一覧から登録番号・ペアを選択（全${pairs.length}組）...</option>` +
+        pairs.map((p) => `<option value="${escapeHtml(p.label)}">${escapeHtml(p.label)}</option>`).join('');
+    }
+
     document.getElementById('umpire-modal').classList.remove('hidden');
-    setTimeout(() => document.getElementById('umpire-modal-input').focus(), 40);
+    setTimeout(() => {
+      if (numInput) numInput.focus();
+    }, 40);
+  }
+
+  function previewUmpireByNumber(val) {
+    const previewEl = document.getElementById('umpire-slot-num-preview');
+    if (!previewEl) return;
+    const n = parseInt(val, 10);
+    if (!n || n < 1) {
+      previewEl.textContent = 'トーナメントの番号を入力すると該当ペアが表示されます';
+      previewEl.className = 'text-[11px] font-semibold text-blue-800 min-h-[16px]';
+      return;
+    }
+    const found = buildActiveSlotNumberList().find((p) => p.num === n);
+    if (found) {
+      previewEl.textContent = `一致: ${found.label}`;
+      previewEl.className = 'text-[11px] font-bold text-emerald-700 min-h-[16px]';
+    } else {
+      previewEl.textContent = `番号 ${n} に該当する出場ペアがありません`;
+      previewEl.className = 'text-[11px] font-bold text-rose-600 min-h-[16px]';
+    }
+  }
+
+  function applyUmpireByNumber(appendMode) {
+    const numInput = document.getElementById('umpire-slot-num-input');
+    const textInput = document.getElementById('umpire-modal-input');
+    if (!numInput || !textInput) return;
+    const n = parseInt(numInput.value, 10);
+    const found = buildActiveSlotNumberList().find((p) => p.num === n);
+    if (!found) {
+      showToast('該当する選手登録番号が見つかりません', 'warn');
+      return;
+    }
+    if (appendMode && textInput.value.trim()) {
+      textInput.value = `${textInput.value.trim()} ／ ${found.label}`;
+    } else {
+      textInput.value = found.label;
+    }
+    numInput.value = '';
+    previewUmpireByNumber('');
+    showToast(`${found.label} を審判に反映しました`, 'info', 1600);
+  }
+
+  function applyUmpireFromSelect(val) {
+    if (!val) return;
+    const textInput = document.getElementById('umpire-modal-input');
+    if (textInput) textInput.value = val;
+    const selEl = document.getElementById('umpire-pair-select');
+    if (selEl) selEl.value = '';
   }
 
   function closeUmpireModal() {
@@ -3428,10 +3540,15 @@
   window.highlightOopCard = highlightOopCard;
   window.jumpToOopCard = jumpToOopCard;
   window.selectNewOopBlankForInsert = selectNewOopBlankForInsert;
+  window.duplicateOopBlankRight = duplicateOopBlankRight;
   window.editOopBlankLabel = editOopBlankLabel;
   window.removeOopItem = removeOopItem;
   window.alignOopQuarterfinals = alignOopQuarterfinals;
   window.clearAllOopAssignments = clearAllOopAssignments;
+
+  window.previewUmpireByNumber = previewUmpireByNumber;
+  window.applyUmpireByNumber = applyUmpireByNumber;
+  window.applyUmpireFromSelect = applyUmpireFromSelect;
 
   window.openAnnouncementModal = openAnnouncementModal;
   window.closeAnnouncementModal = closeAnnouncementModal;

@@ -139,6 +139,14 @@ html.standalone-staff-boot #btn-google-login {
   outline: 1.5px solid #ea580c !important;
 }
 
+/* 同一校内の重複生徒（自動塗りつぶし：確認用印刷は維持、配布用印刷・PDFは自動停止） */
+.duplicate-student-fill {
+  background-color: #fecdd3 !important;
+  outline: 1.5px solid #e11d48 !important;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+
 /* 2回戦同校接近（薄い黄破線） */
 .same-school-r2-alert {
   background-color: rgba(245, 158, 11, 0.1) !important;
@@ -214,6 +222,13 @@ body.pdf-capturing .empty-slot-placeholder:not(.slot-custom-fill) {
 body.pdf-capturing.print-hide-ranks .rank-badge-el,
 body.pdf-capturing.print-hide-ranks .priority-rank-el {
   display: none !important;
+}
+body.pdf-capturing.print-hide-ranks .duplicate-student-fill:not(.slot-custom-fill) {
+  background-color: transparent !important;
+  outline: none !important;
+}
+body.pdf-capturing.print-hide-ranks .duplicate-student-fill {
+  outline: none !important;
 }
 body.pdf-capturing.print-hide-fills .slot-custom-fill {
   background-color: transparent !important;
@@ -314,6 +329,13 @@ body.pdf-capturing.print-hide-fills .slot-custom-fill {
   body.print-hide-ranks .rank-badge-el,
   body.print-hide-ranks .priority-rank-el {
     display: none !important;
+  }
+  body.print-hide-ranks .duplicate-student-fill:not(.slot-custom-fill) {
+    background-color: transparent !important;
+    outline: none !important;
+  }
+  body.print-hide-ranks .duplicate-student-fill {
+    outline: none !important;
   }
   body.print-hide-fills .slot-custom-fill {
     background-color: transparent !important;
