@@ -34,7 +34,11 @@
       eventId: null,
       searchQuery: '',
       schoolFilter: 'ALL',
-      bracketZoom: 0.72,
+      courtFilter: 'ALL',     // 'ALL' | 'ACTIVE' | 'CHECKED'
+      expandedCourts: {},     // { [courtKey]: boolean }
+      bracketBlock: 'ALL',    // 'ALL' | 'A' | 'B' | 'C' | 'D'
+      bracketStage: 'ALL',    // 'ALL' | '32' | '16' | '8'
+      bracketZoom: 0.78,
       unlockedPasscode: '',
       organizerBypassClosed: false,
       favorites: new Set()
@@ -2424,6 +2428,307 @@
     else renderSpectatorView();
   }
 
+  function refreshActiveSpectatorPortal() {
+    if (opsUi.standalonePublic) renderStandalonePublicFrame();
+    else renderSpectatorView();
+  }
+
+  function setSpectatorCourtFilter(filterVal) {
+    opsUi.spectator.courtFilter = ['ALL', 'ACTIVE', 'CHECKED'].includes(filterVal) ? filterVal : 'ALL';
+    refreshActiveSpectatorPortal();
+  }
+
+  function toggleSpectatorCourtExpand(courtKey) {
+    opsUi.spectator.expandedCourts[courtKey] = !opsUi.spectator.expandedCourts[courtKey];
+    refreshActiveSpectatorPortal();
+  }
+
+  function setSpectatorBracketBlock(blk) {
+    opsUi.spectator.bracketBlock = ['ALL', 'A', 'B', 'C', 'D'].includes(blk) ? blk : 'ALL';
+    if (opsUi.spectator.bracketBlock !== 'ALL') opsUi.spectator.bracketStage = 'ALL';
+    refreshActiveSpectatorPortal();
+  }
+
+  function setSpectatorBracketStage(stage) {
+    opsUi.spectator.bracketStage = ['ALL', '32', '16', '8'].includes(stage) ? stage : 'ALL';
+    if (opsUi.spectator.bracketStage !== 'ALL') opsUi.spectator.bracketBlock = 'ALL';
+    refreshActiveSpectatorPortal();
+  }
+
+  function fitSpectatorBracketZoom() {
+    const box = document.getElementById('spec-bracket-scroll');
+    const canvas = document.getElementById('spec-bracket-inner');
+    if (!box || !canvas) return;
+    const rawW = parseFloat(canvas.dataset.rawWidth || '500');
+    const availW = Math.max(260, box.clientWidth - 24);
+    opsUi.spectator.bracketZoom = Math.max(0.42, Math.min(1.15, Math.floor((availW / rawW) * 100) / 100));
+    refreshActiveSpectatorPortal();
+  }
+
+  function jumpSpectatorToFirstChecked() {
+    const el = document.querySelector('#spec-bracket-scroll [data-spec-checked="1"]');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    } else {
+      showToast('現在の表示範囲に★チェック中のペアがありません', 'info', 2000);
+    }
+  }
+
+  function focusSpectatorCourt(courtKey) {
+    opsUi.spectator.tab = 'courts';
+    opsUi.spectator.courtFilter = 'ALL';
+    opsUi.spectator.expandedCourts[String(courtKey)] = true;
+    refreshActiveSpectatorPortal();
+    setTimeout(() => {
+      const el = document.querySelector(`[data-spec-court="${courtKey}"]`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 50);
+  }
+
+  function buildSpectatorEntryMetrics(evId, evData, catalog, oop) {
+    const matchCourtMap = {};
+    const courtAheadMap = {};
+    Object.keys(oop.courts || {}).forEach((cKey) => {
+      const list = oop.courts[cKey] || [];
+      let unplayedBefore = 0;
+      list.forEach((k, idx) => {
+        if (OopEngine.isBlankKey(k)) return;
+        const st = oop.statuses[k] || 'waiting';
+        matchCourtMap[k] = { court: cKey, order: idx + 1 };
+        courtAheadMap[k] = unplayedBefore;
+        if (st !== 'finished' && st !== 'wo') unplayedBefore++;
+      });
+    });
+
+    const getEntryStatus = (entry) => {
+      const related = catalog.matches.filter(
+        (m) => (m.p1Entry && m.p1Entry.id === entry.id) || (m.p2Entry && m.p2Entry.id === entry.id)
+      );
+      let stateKind = 'waiting';
+      let badge = { text: '待機中', cls: 'bg-slate-100 text-slate-600' };
+      let targetCourt = null;
+      let waitCount = null;
+
+      const activeMatch = related.find((m) => {
+        const st = oop.statuses[m.key];
+        return st === 'playing' || st === 'calling';
+      });
+      if (activeMatch) {
+        const st = oop.statuses[activeMatch.key];
+        const loc = matchCourtMap[activeMatch.key];
+        targetCourt = loc ? loc.court : null;
+        stateKind = st;
+        badge = st === 'playing'
+          ? { text: `C${loc ? loc.court : '?'} 試合中`, cls: 'bg-rose-600 text-white' }
+          : { text: `C${loc ? loc.court : '?'} コール中`, cls: 'bg-amber-500 text-white' };
+      } else {
+        const nextMatch = related.find((m) => !m.isFinished);
+        if (nextMatch) {
+          const loc = matchCourtMap[nextMatch.key];
+          targetCourt = loc ? loc.court : null;
+          waitCount = typeof courtAheadMap[nextMatch.key] === 'number' ? courtAheadMap[nextMatch.key] : null;
+          stateKind = waitCount === 0 ? 'next' : 'upcoming';
+          const waitLabel = waitCount === 0 ? '次試合！' : (waitCount !== null ? `あと${waitCount}試合` : nextMatch.matchNo);
+          badge = waitCount === 0
+            ? { text: `C${loc ? loc.court : '?'} ${waitLabel}`, cls: 'bg-blue-600 text-white' }
+            : { text: `C${loc ? loc.court : '?'} ${waitLabel}`, cls: 'bg-sky-100 text-sky-900 border border-sky-200' };
+        } else if (related.length > 0) {
+          const last = related[related.length - 1];
+          const wonLast = last.winnerEntry && last.winnerEntry.id === entry.id;
+          stateKind = wonLast ? 'advanced' : 'eliminated';
+          badge = wonLast
+            ? { text: '次戦相手待ち', cls: 'bg-emerald-100 text-emerald-800' }
+            : { text: '試合終了', cls: 'bg-slate-200 text-slate-600' };
+        }
+      }
+      return { stateKind, badge, related, targetCourt, waitCount };
+    };
+
+    return { matchCourtMap, courtAheadMap, getEntryStatus };
+  }
+
+  /**
+   * プレビュー・別端末公開ポータル共通の BracketFlow オリジナルUIレンダラ
+   */
+  function renderUnifiedSpectatorPortal(frame, opts) {
+    const {
+      tournamentName,
+      eventsList,
+      activeEvent,
+      evData,
+      nameMode,
+      tourAnnouncement,
+      isStandalone
+    } = opts;
+
+    const aliases = evData.schoolAliases || {};
+    const shortSchool = (raw) => {
+      const k = String(raw || '').trim();
+      if (Object.prototype.hasOwnProperty.call(aliases, k) && String(aliases[k] || '').trim()) return String(aliases[k]).trim();
+      return formatSchoolShortName(k);
+    };
+    const pairFmt = (entry) => OopEngine.formatSpectatorPairName(entry, nameMode, shortSchool);
+
+    const catalog = OopEngine.buildMatchCatalog({
+      bracketSize: evData.bracketSize || 16,
+      slots: evData.slots || [],
+      activeSlotMask: evData.activeSlotMask || [],
+      results: evData.results || {},
+      consolation: evData.consolation || null,
+      labelFormatter: pairFmt
+    });
+    const oop = OopEngine.reconcileOopState(evData.oop, catalog).oop;
+    const metrics = buildSpectatorEntryMetrics(activeEvent.id, evData, catalog, oop);
+
+    // 進捗率・ライブ稼働数
+    let liveCourtCnt = 0;
+    let finishedCnt = 0;
+    catalog.matches.forEach((m) => {
+      const st = oop.statuses[m.key] || 'waiting';
+      if (st === 'playing' || st === 'calling') liveCourtCnt++;
+      else if (st === 'finished' || st === 'wo') finishedCnt++;
+    });
+    const totalMatches = catalog.matches.length;
+    const progressPct = totalMatches > 0 ? Math.round((finishedCnt / totalMatches) * 100) : 0;
+    const updatedClock = oop.updatedAt ? oop.updatedAt.slice(11, 16) : new Date().toTimeString().slice(0, 5);
+
+    // ① マイチェック（★登録ペア）ピン留めバー
+    const entries = Array.isArray(evData.entries) ? evData.entries : [];
+    const checkedEntries = entries.filter((e) => opsUi.spectator.favorites.has(`${activeEvent.id}::${e.id}`));
+    const checkedEntryIdSet = new Set(checkedEntries.map((e) => e.id));
+
+    const myCheckBarHtml = checkedEntries.length > 0 ? `
+      <div class="bg-slate-900/95 border-b border-teal-800/60 px-3 py-2 shrink-0 space-y-1.5">
+        <div class="flex items-center justify-between text-[10px]">
+          <span class="font-extrabold text-amber-300 flex items-center gap-1">
+            <span>★ マイチェック（${checkedEntries.length}組）</span>
+          </span>
+          <button onclick="${isStandalone ? "setStandaloneSpectatorTab('search')" : "setSpectatorTab('search')"}" class="text-teal-300 hover:text-white font-bold">変更 ▸</button>
+        </div>
+        <div class="flex items-stretch gap-2 overflow-x-auto pb-0.5">
+          ${checkedEntries.map((e) => {
+            const st = metrics.getEntryStatus(e);
+            const tapAction = st.targetCourt
+              ? `focusSpectatorCourt('${escapeJs(st.targetCourt)}')`
+              : `${isStandalone ? "setStandaloneSpectatorTab('search')" : "setSpectatorTab('search')"}`;
+            return `
+              <button onclick="${tapAction}"
+                      class="shrink-0 min-w-[168px] max-w-[220px] text-left px-2.5 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-800 border border-slate-700/90 transition space-y-1">
+                <div class="text-[11px] font-extrabold text-white truncate">${escapeHtml(pairFmt(e))}</div>
+                <div class="flex items-center justify-between gap-1.5">
+                  <span class="px-1.5 py-0.5 rounded-md text-[10px] font-bold ${st.badge.cls}">${escapeHtml(st.badge.text)}</span>
+                  ${st.targetCourt ? `<span class="text-[9.5px] text-teal-300 font-bold">コートへ ▸</span>` : ''}
+                </div>
+              </button>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    ` : `
+      <button onclick="${isStandalone ? "setStandaloneSpectatorTab('search')" : "setSpectatorTab('search')"}"
+              class="w-full text-left bg-teal-950/90 hover:bg-teal-900/90 text-teal-100 border-b border-teal-800/70 px-3.5 py-1.5 text-[11px] flex items-center justify-between gap-2 shrink-0 transition">
+        <span class="truncate"><b class="text-amber-300 mr-1">☆ マイチェック:</b>選手に★を付けると、ここにコートと待ち試合数を固定表示</span>
+        <span class="font-bold text-teal-300 shrink-0">登録 ▸</span>
+      </button>
+    `;
+
+    const tab = opsUi.spectator.tab;
+    let bodyHtml = '';
+    if (tab === 'courts') {
+      bodyHtml = renderSpectatorCourtsTab(catalog, oop, pairFmt, checkedEntryIdSet);
+    } else if (tab === 'bracket') {
+      bodyHtml = renderSpectatorBracketTab(activeEvent.id, evData, catalog, nameMode, shortSchool, checkedEntryIdSet);
+    } else {
+      bodyHtml = renderSpectatorSearchTab(activeEvent, evData, catalog, oop, nameMode, shortSchool, pairFmt, metrics);
+    }
+
+    const evSelectFn = isStandalone ? 'selectStandalonePublicEvent' : 'selectSpectatorEvent';
+    const tabSelectFn = isStandalone ? 'setStandaloneSpectatorTab' : 'setSpectatorTab';
+
+    frame.innerHTML = `
+      <!-- BracketFlow オリジナル ヘッダー（ディープティール・進行ゲージ付） -->
+      <div class="bg-gradient-to-br from-slate-950 via-slate-900 to-teal-950 text-white px-4 pt-3 pb-2.5 space-y-2 shrink-0">
+        <div class="flex items-start justify-between gap-2">
+          <div class="flex items-start gap-2 min-w-0">
+            <span class="w-7 h-7 mt-0.5 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-500 text-slate-950 flex items-center justify-center shrink-0 shadow-sm">
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 6h5v5H4" /><path d="M4 18h5v-5H4" /><path d="M9 8.5h5v7H9" /><path d="M14 12h6" />
+              </svg>
+            </span>
+            <div class="min-w-0">
+              <div class="flex items-center gap-1.5 text-[10px] font-bold text-emerald-300">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 live-dot"></span>
+                <span>LIVE</span>
+                <span class="text-slate-400 font-medium">${escapeHtml(updatedClock)} 更新</span>
+                ${nameMode === 'surname' ? `<span class="px-1.5 rounded bg-slate-800/90 text-slate-300 border border-slate-700">名字表示</span>` : ''}
+              </div>
+              <h2 class="text-sm sm:text-base font-extrabold leading-tight truncate mt-0.5">${escapeHtml(tournamentName)}</h2>
+            </div>
+          </div>
+          <span class="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-white/10 text-teal-100 border border-white/15 shrink-0">${escapeHtml(oop.venue || activeEvent.venue || '第1会場')}</span>
+        </div>
+
+        <!-- 種目切替ピル -->
+        <div class="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+          ${(eventsList || []).map((item) => {
+            const act = item.id === activeEvent.id;
+            return `<button onclick="${evSelectFn}('${escapeJs(item.id)}')"
+                            class="px-3 py-1 text-[11px] font-bold rounded-full shrink-0 transition ${act ? 'bg-emerald-400 text-slate-950 shadow-sm' : 'bg-white/10 text-slate-200 hover:bg-white/20'}">
+                      ${escapeHtml(item.name)}
+                    </button>`;
+          }).join('')}
+        </div>
+
+        <!-- 大会消化ゲージ（BracketFlowオリジナル・パルスバー） -->
+        <div class="space-y-1 pt-0.5">
+          <div class="flex items-center justify-between text-[10px] font-bold text-slate-300">
+            <span>大会進行：${finishedCnt} / ${totalMatches} 試合終了</span>
+            <span class="text-emerald-300">${progressPct}%</span>
+          </div>
+          <div class="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
+            <div class="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-300 transition-all duration-300" style="width:${progressPct}%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 運営者アナウンスバナー -->
+      ${renderAnnouncementBannersHtml(tourAnnouncement, oop.announcement, oop.venue || activeEvent.venue)}
+
+      <!-- マイチェック（★固定ライブバー） -->
+      ${myCheckBarHtml}
+
+      <!-- タブ本体 -->
+      <div class="flex-1 overflow-auto p-3 space-y-3 bg-slate-100/90">
+        ${bodyHtml}
+      </div>
+
+      <!-- スマホ親指最適化 ボトムドック3タブナビ -->
+      <nav class="bg-white border-t border-slate-200 grid grid-cols-3 shrink-0 shadow-[0_-4px_12px_rgba(15,23,42,0.06)]">
+        <button onclick="${tabSelectFn}('courts')"
+                class="py-2 flex flex-col items-center justify-center gap-0.5 transition ${tab === 'courts' ? 'text-teal-700 bg-teal-50/60' : 'text-slate-500 hover:text-slate-800'}">
+          <div class="relative flex items-center justify-center">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
+            ${liveCourtCnt > 0 ? `<span class="ml-1 px-1 rounded-full bg-rose-600 text-white text-[9px] font-extrabold leading-tight">${liveCourtCnt}</span>` : ''}
+          </div>
+          <span class="text-[10px] font-extrabold">コート状況</span>
+        </button>
+        <button onclick="${tabSelectFn}('bracket')"
+                class="py-2 flex flex-col items-center justify-center gap-0.5 transition ${tab === 'bracket' ? 'text-teal-700 bg-teal-50/60' : 'text-slate-500 hover:text-slate-800'}">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h5v5H4M4 18h5v-5H4M9 8.5h5v7H9M14 12h6"/></svg>
+          <span class="text-[10px] font-extrabold">トーナメント</span>
+        </button>
+        <button onclick="${tabSelectFn}('search')"
+                class="py-2 flex flex-col items-center justify-center gap-0.5 transition ${tab === 'search' ? 'text-teal-700 bg-teal-50/60' : 'text-slate-500 hover:text-slate-800'}">
+          <div class="relative flex items-center justify-center">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path stroke-linecap="round" d="M20 20l-3.5-3.5"/></svg>
+            ${checkedEntries.length > 0 ? `<span class="ml-1 px-1 rounded-full bg-amber-400 text-slate-950 text-[9px] font-extrabold leading-tight">★${checkedEntries.length}</span>` : ''}
+          </div>
+          <span class="text-[10px] font-extrabold">選手・学校</span>
+        </button>
+      </nav>
+    `;
+  }
+
   function renderSpectatorView() {
     const frame = document.getElementById('spectator-portal-frame');
     if (!frame || !opsUi.bundle) return;
@@ -2474,92 +2779,20 @@
 
     const ev = getSpectatorEvent();
     if (!ev || !ev.data) return;
-    const evData = ev.data;
-    const aliases = evData.schoolAliases || {};
-    const shortSchool = (raw) => {
-      const k = String(raw || '').trim();
-      if (Object.prototype.hasOwnProperty.call(aliases, k) && String(aliases[k] || '').trim()) return String(aliases[k]).trim();
-      return formatSchoolShortName(k);
-    };
-    const nameMode = pub.nameDisplayMode || 'full';
-    const pairFmt = (entry) => OopEngine.formatSpectatorPairName(entry, nameMode, shortSchool);
-
-    const catalog = OopEngine.buildMatchCatalog({
-      bracketSize: evData.bracketSize || 16,
-      slots: evData.slots || [],
-      activeSlotMask: evData.activeSlotMask || [],
-      results: evData.results || {},
-      consolation: evData.consolation || null,
-      labelFormatter: pairFmt
+    renderUnifiedSpectatorPortal(frame, {
+      tournamentName: opsUi.bundle.name,
+      eventsList: opsUi.bundle.events,
+      activeEvent: ev,
+      evData: ev.data,
+      nameMode: pub.nameDisplayMode || 'full',
+      tourAnnouncement: opsUi.bundle.announcement,
+      isStandalone: false
     });
-    const reconciled = OopEngine.reconcileOopState(evData.oop, catalog);
-    const oop = reconciled.oop;
-
-    const tab = opsUi.spectator.tab;
-    let bodyHtml = '';
-    if (tab === 'courts') {
-      bodyHtml = renderSpectatorCourtsTab(catalog, oop, pairFmt);
-    } else if (tab === 'bracket') {
-      bodyHtml = renderSpectatorBracketTab(evData, catalog, nameMode, shortSchool);
-    } else {
-      bodyHtml = renderSpectatorSearchTab(ev, evData, catalog, oop, nameMode, shortSchool, pairFmt);
-    }
-
-    frame.innerHTML = `
-      <!-- ポータルヘッダー -->
-      <div class="bg-slate-900 text-white px-4 py-3 space-y-2 shrink-0">
-        <div class="flex items-start justify-between gap-2">
-          <div class="min-w-0">
-            <div class="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400">
-              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 live-dot"></span>
-              <span>LIVE 速報ポータル</span>
-              ${nameMode === 'surname' ? `<span class="px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 border border-slate-700">名字表示</span>` : ''}
-            </div>
-            <h2 class="text-sm font-extrabold leading-tight truncate mt-0.5">${escapeHtml(opsUi.bundle.name)}</h2>
-          </div>
-          <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 shrink-0">${escapeHtml(oop.venue || ev.venue || '第1会場')}</span>
-        </div>
-
-        <!-- 種目切替ピル -->
-        <div class="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-          ${opsUi.bundle.events.map((item) => {
-            const act = item.id === ev.id;
-            return `<button onclick="selectSpectatorEvent('${escapeJs(item.id)}')"
-                            class="px-2.5 py-1 text-[11px] font-bold rounded-full shrink-0 transition ${act ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}">
-                      ${escapeHtml(item.name)}
-                    </button>`;
-          }).join('')}
-        </div>
-      </div>
-
-      <!-- 運営者アナウンスバナー -->
-      ${renderAnnouncementBannersHtml(opsUi.bundle.announcement, oop.announcement, oop.venue || ev.venue)}
-
-      <!-- 3タブナビゲーション -->
-      <div class="bg-white border-b border-slate-200 grid grid-cols-3 shrink-0">
-        <button onclick="setSpectatorTab('courts')"
-                class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'courts' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500 hover:text-slate-800'}">
-          コート状況
-        </button>
-        <button onclick="setSpectatorTab('bracket')"
-                class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'bracket' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500 hover:text-slate-800'}">
-          トーナメント表
-        </button>
-        <button onclick="setSpectatorTab('search')"
-                class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'search' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500 hover:text-slate-800'}">
-          選手・学校検索
-        </button>
-      </div>
-
-      <!-- タブ本体 -->
-      <div class="flex-1 overflow-auto p-3 space-y-3 bg-slate-50">
-        ${bodyHtml}
-      </div>
-    `;
   }
 
-  function renderSpectatorCourtsTab(catalog, oop, pairFmt) {
+  function renderSpectatorCourtsTab(catalog, oop, pairFmt, checkedEntryIdSet) {
     const nCourts = oop.courtCount || 4;
+    const checkedIds = checkedEntryIdSet || new Set();
     let playing = 0;
     let calling = 0;
     let finished = 0;
@@ -2570,16 +2803,31 @@
       else if (st === 'finished' || st === 'wo') finished++;
     });
 
+    const isMatchChecked = (m) => Boolean(
+      m && ((m.p1Entry && checkedIds.has(m.p1Entry.id)) || (m.p2Entry && checkedIds.has(m.p2Entry.id)))
+    );
+
+    const filter = opsUi.spectator.courtFilter || 'ALL';
     let cardsHtml = '';
+    let visibleCourtCount = 0;
+
     for (let c = 1; c <= nCourts; c++) {
       const cKey = String(c);
       const courtKeys = oop.courts[cKey] || [];
       const realCourtTotal = courtKeys.filter((k) => !OopEngine.isBlankKey(k)).length;
       const live = OopEngine.getCourtLiveSlots(courtKeys, catalog.matchMap, oop.statuses);
+      const hasCheckedInCourt = courtKeys.some((k) => !OopEngine.isBlankKey(k) && isMatchChecked(catalog.matchMap[k]) && !((catalog.matchMap[k] && catalog.matchMap[k].isFinished)));
+      const isActiveCourt = Boolean(live.current);
+
+      if (filter === 'ACTIVE' && !isActiveCourt) continue;
+      if (filter === 'CHECKED' && !hasCheckedInCourt) continue;
+      visibleCourtCount++;
 
       let statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">待機中</span>`;
+      let cardBorder = hasCheckedInCourt ? 'border-amber-300 ring-1 ring-amber-200' : 'border-slate-200';
       if (live.current && live.current.status === 'playing') {
-        statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white">試合中</span>`;
+        statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-white live-dot"></span>試合中</span>`;
+        if (!hasCheckedInCourt) cardBorder = 'border-rose-200';
       } else if (live.current && live.current.status === 'calling') {
         statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-white">コール中</span>`;
       } else if (live.leadingBlankKey) {
@@ -2593,15 +2841,17 @@
         if (!slotItem) return '';
         const m = slotItem.match;
         const ump = OopEngine.getUmpireLabel(courtKeys, slotItem.indexInCourt, catalog.matchMap, oop, pairFmt);
+        const star1 = m.p1Entry && checkedIds.has(m.p1Entry.id) ? '<span class="text-amber-500 mr-0.5">★</span>' : '';
+        const star2 = m.p2Entry && checkedIds.has(m.p2Entry.id) ? '<span class="text-amber-500 mr-0.5">★</span>' : '';
         return `
-          <div class="p-2.5 rounded-lg border ${tone} space-y-1">
+          <div class="p-2.5 rounded-xl border ${tone} space-y-1">
             <div class="flex items-center justify-between text-[10px] font-bold">
               <span>${title} ・ ${escapeHtml(m.matchNo)}（${escapeHtml(m.roundLabel)}）</span>
             </div>
-            <div class="text-xs font-extrabold text-slate-900 leading-snug">${escapeHtml(m.p1Label)}</div>
+            <div class="text-xs font-extrabold text-slate-900 leading-snug">${star1}${escapeHtml(m.p1Label)}</div>
             <div class="text-[10px] font-bold text-slate-400">vs</div>
-            <div class="text-xs font-extrabold text-slate-900 leading-snug">${escapeHtml(m.p2Label)}</div>
-            ${ump.text ? `<div class="text-[10px] text-slate-600 pt-0.5 border-t border-slate-200/70">審判: ${escapeHtml(ump.text)}</div>` : ''}
+            <div class="text-xs font-extrabold text-slate-900 leading-snug">${star2}${escapeHtml(m.p2Label)}</div>
+            ${ump.text ? `<div class="text-[10px] text-slate-600 pt-1 border-t border-slate-200/70">審判: ${escapeHtml(ump.text)}</div>` : ''}
           </div>
         `;
       };
@@ -2609,10 +2859,12 @@
       const renderCompactRow = (slotItem, tag) => {
         if (!slotItem) return '';
         const m = slotItem.match;
+        const checked = isMatchChecked(m);
         return `
-          <div class="flex items-start gap-2 text-[11px] py-1 border-t border-slate-100">
-            <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-bold text-[9px] shrink-0 mt-0.5">${tag}</span>
+          <div class="flex items-start gap-2 text-[11px] py-1.5 border-t border-slate-100 ${checked ? 'bg-amber-50/70 -mx-1 px-1 rounded' : ''}">
+            <span class="px-1.5 py-0.5 rounded ${tag === '次試合' ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-600'} font-bold text-[9px] shrink-0 mt-0.5">${tag}</span>
             <div class="min-w-0 flex-1 leading-snug">
+              ${checked ? '<span class="text-amber-500 font-bold mr-0.5">★</span>' : ''}
               <span class="font-bold text-slate-500 mr-1">${escapeHtml(m.matchNo)}</span>
               <span class="font-bold text-slate-800">${escapeHtml(m.p1Label)}</span>
               <span class="text-slate-400 mx-1">vs</span>
@@ -2622,10 +2874,49 @@
         `;
       };
 
+      const isExpanded = Boolean(opsUi.spectator.expandedCourts[cKey]);
+      const fullScheduleHtml = isExpanded ? `
+        <div class="pt-2 border-t border-slate-200 space-y-1">
+          <div class="text-[10px] font-extrabold text-slate-500">コート ${c} 全予定（第1〜第${courtKeys.length}試合）</div>
+          ${courtKeys.map((k, idx) => {
+            if (OopEngine.isBlankKey(k)) {
+              const bLbl = (oop.blankLabels && oop.blankLabels[k]) || '空き（進行調整）';
+              return `<div class="flex items-center justify-between gap-2 px-2 py-1 rounded bg-amber-50/70 border border-dashed border-amber-300 text-[10px] text-amber-900 font-bold">
+                <span>第${idx + 1}試合</span>
+                <span>${escapeHtml(bLbl)}</span>
+              </div>`;
+            }
+            const m = catalog.matchMap[k];
+            if (!m) return '';
+            const st = oop.statuses[k] || 'waiting';
+            const checked = isMatchChecked(m);
+            const stBadge = m.result
+              ? `<span class="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 font-extrabold">${escapeHtml(m.result.g1)}-${escapeHtml(m.result.g2)}</span>`
+              : (st === 'playing'
+                ? `<span class="px-1.5 py-0.2 rounded bg-rose-600 text-white font-bold">試合中</span>`
+                : (st === 'calling'
+                  ? `<span class="px-1.5 py-0.2 rounded bg-amber-500 text-white font-bold">コール</span>`
+                  : `<span class="px-1.5 py-0.2 rounded bg-slate-100 text-slate-500 font-bold">予定</span>`));
+            return `<div class="flex items-center justify-between gap-2 px-2 py-1 rounded border text-[10px] ${checked ? 'bg-amber-50 border-amber-300' : (m.isFinished ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-white border-slate-200')}">
+              <div class="min-w-0 flex-1 truncate">
+                <span class="font-bold text-slate-400 mr-1">第${idx + 1}</span>
+                ${checked ? '<span class="text-amber-500 font-bold">★</span>' : ''}
+                <span class="font-bold text-slate-700">${escapeHtml(m.matchNo)}</span>
+                <span class="mx-1 text-slate-800 font-semibold">${escapeHtml(m.p1Label)} vs ${escapeHtml(m.p2Label)}</span>
+              </div>
+              <div class="shrink-0">${stBadge}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      ` : '';
+
       cardsHtml += `
-        <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-3 space-y-2">
+        <div data-spec-court="${cKey}" class="bg-white rounded-2xl border ${cardBorder} shadow-sm p-3 space-y-2">
           <div class="flex items-center justify-between">
-            <span class="text-sm font-extrabold text-slate-900">コート ${c}</span>
+            <div class="flex items-center gap-1.5">
+              <span class="text-sm font-extrabold text-slate-900">コート ${c}</span>
+              ${hasCheckedInCourt ? `<span class="px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 text-[9.5px] font-extrabold">★チェック関連</span>` : ''}
+            </div>
             <div class="flex items-center gap-2">
               <span class="text-[10px] text-slate-400 font-bold">${live.finished.length}/${realCourtTotal}完了</span>
               ${statusBadge}
@@ -2633,70 +2924,75 @@
           </div>
           ${live.current
             ? renderLiveBox(live.current, live.current.status === 'playing' ? '現在 試合中' : 'コートへ集合（コール中）', live.current.status === 'playing' ? 'bg-rose-50/80 border-rose-300 text-rose-800' : 'bg-amber-50/80 border-amber-300 text-amber-800')
-            : (live.next ? renderLiveBox(live.next, '次の試合予定', 'bg-blue-50/60 border-blue-200 text-blue-800') : `<div class="text-xs text-slate-400 py-2 text-center">予定されている試合はありません</div>`)}
+            : (live.next ? renderLiveBox(live.next, '次の試合予定', 'bg-sky-50/70 border-sky-200 text-sky-900') : `<div class="text-xs text-slate-400 py-2 text-center">予定されている試合はありません</div>`)}
           ${live.current ? renderCompactRow(live.next, '次試合') : ''}
           ${renderCompactRow(live.current ? live.onDeck : live.upcoming[1], '次々試合')}
+          ${courtKeys.length > 0 ? `
+            <button onclick="toggleSpectatorCourtExpand('${cKey}')"
+                    class="w-full pt-1.5 border-t border-slate-100 text-[10.5px] font-bold text-teal-700 hover:text-teal-900 flex items-center justify-center gap-1">
+              <span>${isExpanded ? '全予定を閉じる ▴' : `このコートの全予定を見る（${courtKeys.length}枠） ▾`}</span>
+            </button>
+          ` : ''}
+          ${fullScheduleHtml}
         </div>
       `;
     }
 
+    const filterBtnCls = (k) => filter === k
+      ? 'px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-900 text-white shadow-sm transition'
+      : 'px-2.5 py-1 rounded-full text-[11px] font-bold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 transition';
+
     return `
       <div class="grid grid-cols-3 gap-2 text-center">
-        <div class="bg-white rounded-lg border border-slate-200 p-2">
+        <div class="bg-white rounded-xl border border-slate-200 p-2 shadow-sm">
           <div class="text-[10px] font-bold text-slate-500">試合中</div>
           <div class="text-base font-extrabold text-rose-600">${playing}<span class="text-[10px] text-slate-400 ml-0.5">面</span></div>
         </div>
-        <div class="bg-white rounded-lg border border-slate-200 p-2">
+        <div class="bg-white rounded-xl border border-slate-200 p-2 shadow-sm">
           <div class="text-[10px] font-bold text-slate-500">コール中</div>
           <div class="text-base font-extrabold text-amber-600">${calling}<span class="text-[10px] text-slate-400 ml-0.5">面</span></div>
         </div>
-        <div class="bg-white rounded-lg border border-slate-200 p-2">
+        <div class="bg-white rounded-xl border border-slate-200 p-2 shadow-sm">
           <div class="text-[10px] font-bold text-slate-500">終了</div>
-          <div class="text-base font-extrabold text-emerald-600">${finished}<span class="text-[10px] text-slate-400 ml-0.5">/${catalog.matches.length}</span></div>
+          <div class="text-base font-extrabold text-teal-700">${finished}<span class="text-[10px] text-slate-400 ml-0.5">/${catalog.matches.length}</span></div>
         </div>
       </div>
-      <div class="grid grid-cols-1 ${opsUi.spectator.frameMode === 'full' ? 'md:grid-cols-2 lg:grid-cols-3' : ''} gap-2.5">
-        ${cardsHtml}
+
+      <!-- ③ コート絞り込みフィルタ -->
+      <div class="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+        <button onclick="setSpectatorCourtFilter('ALL')" class="${filterBtnCls('ALL')}">すべて (${nCourts}面)</button>
+        <button onclick="setSpectatorCourtFilter('ACTIVE')" class="${filterBtnCls('ACTIVE')}">進行中のみ (${playing + calling})</button>
+        <button onclick="setSpectatorCourtFilter('CHECKED')" class="${filterBtnCls('CHECKED')}">★チェック関連</button>
       </div>
+
+      ${visibleCourtCount > 0 ? `
+        <div class="grid grid-cols-1 ${opsUi.spectator.frameMode === 'full' ? 'md:grid-cols-2 lg:grid-cols-3' : ''} gap-2.5">
+          ${cardsHtml}
+        </div>
+      ` : `
+        <div class="bg-white rounded-2xl border border-slate-200 p-6 text-center text-xs text-slate-500 space-y-2">
+          <div>${filter === 'CHECKED' ? '★チェック中のペアが予定されているコートがありません' : '現在、試合中・コール中のコートはありません'}</div>
+          <button onclick="setSpectatorCourtFilter('ALL')" class="px-3 py-1 rounded-lg bg-slate-900 text-white text-[11px] font-bold">全コートを表示</button>
+        </div>
+      `}
     `;
   }
 
-  function renderSpectatorBracketTab(evData, catalog, nameMode, shortSchool) {
+  /**
+   * ② トーナメント表タブ：ブロック分割（A/B/C/D）＋ ベスト32/16/8 絞り込み表示対応
+   */
+  function renderSpectatorBracketTab(evId, evData, catalog, nameMode, shortSchool, checkedEntryIdSet) {
     const size = evData.bracketSize || 16;
     const totalRounds = Math.round(Math.log2(size));
     const tree = catalog.tree;
-    const rowH = size >= 64 ? 26 : 30;
-    const labelW = 210;
-    const stepW = Math.max(24, Math.min(38, Math.floor(170 / Math.max(1, totalRounds))));
-    const totalW = labelW + totalRounds * stepW + 130;
-    const totalH = size * rowH + 24;
+    const checkedIds = checkedEntryIdSet || new Set();
 
-    const nodeY = [];
-    nodeY[0] = [];
-    for (let i = 0; i < size; i++) nodeY[0][i] = i * rowH + rowH / 2 + 10;
-    for (let r = 1; r <= totalRounds; r++) {
-      const count = size / Math.pow(2, r);
-      nodeY[r] = [];
-      for (let m = 0; m < count; m++) {
-        const node = tree[r][m];
-        if (!node.active) nodeY[r][m] = (nodeY[r - 1][m * 2] + nodeY[r - 1][m * 2 + 1]) / 2;
-        else if (node.isBye) nodeY[r][m] = node.c0.active ? nodeY[r - 1][m * 2] : nodeY[r - 1][m * 2 + 1];
-        else nodeY[r][m] = (nodeY[r - 1][m * 2] + nodeY[r - 1][m * 2 + 1]) / 2;
-      }
-    }
+    let stage = opsUi.spectator.bracketStage || 'ALL';
+    let blk = opsUi.spectator.bracketBlock || 'ALL';
+    if (stage !== 'ALL' && parseInt(stage, 10) >= size) stage = 'ALL';
+    if (blk !== 'ALL' && size < 8) blk = 'ALL';
 
-    const effX = (node, round) => {
-      if (round === 0) return labelW;
-      if (node.isBye) return effX(node.c0.active ? node.c0 : node.c1, round - 1);
-      return labelW + round * stepW;
-    };
-    const reachedByWin = (node) => {
-      if (!node || !node.active) return false;
-      if (node.round === undefined) return false;
-      if (node.isBye) return reachedByWin(node.c0.active ? node.c0 : node.c1);
-      return Boolean(node.result);
-    };
-
+    const labelW = 212;
     let blackLines = '';
     let redLines = '';
     let scoresSvg = '';
@@ -2706,79 +3002,239 @@
       if (isRed) redLines += line;
       else blackLines += line;
     };
+    const reachedByWin = (node) => {
+      if (!node || !node.active) return false;
+      if (node.round === undefined) return false;
+      if (node.isBye) return reachedByWin(node.c0.active ? node.c0 : node.c1);
+      return Boolean(node.result);
+    };
 
-    const evIdForFav = opsUi.standalonePublic
-      ? opsUi.standalonePublic.liveEvent.id
-      : (opsUi.spectator.eventId || (getActiveEvent() && getActiveEvent().id) || '');
+    let totalW = 480;
+    let totalH = 300;
+    let viewHeading = '全回戦';
 
-    let displayNo = 1;
-    for (let i = 0; i < size; i++) {
-      const leaf = tree[0][i];
-      if (!leaf.active) continue;
-      const y = nodeY[0][i];
-      const nameStr = leaf.entry ? OopEngine.formatSpectatorPairName(leaf.entry, nameMode, shortSchool) : '空き';
-      const isFav = Boolean(leaf.entry && opsUi.spectator.favorites.has(`${evIdForFav}::${leaf.entry.id}`));
-      labelsHtml += `<div style="left:4px; top:${y - 11}px; width:${labelW - 10}px; height:22px;"
-                          class="absolute flex items-center gap-1.5 text-[11px] leading-snug rounded px-1 ${isFav ? 'bg-amber-200/80 ring-1 ring-amber-400' : ''}">
-        <span class="w-5 text-right font-bold ${isFav ? 'text-amber-900' : 'text-slate-400'} shrink-0">${displayNo++}</span>
-        <span class="font-bold text-slate-900 truncate">${isFav ? '★' : ''}${escapeHtml(nameStr)}</span>
-      </div>`;
-    }
+    if (stage !== 'ALL') {
+      // ベスト32 / ベスト16 / ベスト8 絞り込み表示
+      const targetSize = parseInt(stage, 10);
+      const subRounds = Math.round(Math.log2(targetSize));
+      const baseRound = totalRounds - subRounds; // tree[baseRound] に targetSize 個のノードが並ぶ
+      const rowH = targetSize >= 32 ? 28 : 34;
+      const stepW = Math.max(32, Math.min(48, Math.floor(190 / Math.max(1, subRounds))));
+      totalW = labelW + subRounds * stepW + 140;
+      totalH = targetSize * rowH + 28;
+      viewHeading = `ベスト${targetSize}〜決勝`;
 
-    for (let r = 1; r <= totalRounds; r++) {
-      const count = size / Math.pow(2, r);
-      const xCurr = labelW + r * stepW;
-      for (let m = 0; m < count; m++) {
-        const node = tree[r][m];
-        if (!node.active || node.isBye) continue;
-        const y0 = nodeY[r - 1][m * 2];
-        const y1 = nodeY[r - 1][m * 2 + 1];
-        const yMid = nodeY[r][m];
-        const x0 = effX(node.c0, r - 1);
-        const x1 = effX(node.c1, r - 1);
-        const res = node.result;
-        const w0 = Boolean(res && res.winner === 0);
-        const w1 = Boolean(res && res.winner === 1);
-        pushLine(x0, y0, xCurr, y0, w0 || reachedByWin(node.c0));
-        pushLine(xCurr, y0, xCurr, yMid, w0);
-        pushLine(x1, y1, xCurr, y1, w1 || reachedByWin(node.c1));
-        pushLine(xCurr, yMid, xCurr, y1, w1);
-        if (res) {
-          scoresSvg += `<text x="${xCurr - 7}" y="${y0 - 3}" text-anchor="middle" fill="#dc2626" font-size="10" font-weight="bold">${escapeHtml(res.g1)}</text>`;
-          scoresSvg += `<text x="${xCurr - 7}" y="${y1 + 10}" text-anchor="middle" fill="#dc2626" font-size="10" font-weight="bold">${escapeHtml(res.g2)}</text>`;
+      const subY = [];
+      subY[0] = [];
+      for (let i = 0; i < targetSize; i++) subY[0][i] = i * rowH + rowH / 2 + 12;
+      for (let sr = 1; sr <= subRounds; sr++) {
+        const cnt = targetSize / Math.pow(2, sr);
+        subY[sr] = [];
+        for (let m = 0; m < cnt; m++) {
+          subY[sr][m] = (subY[sr - 1][m * 2] + subY[sr - 1][m * 2 + 1]) / 2;
+        }
+      }
+
+      for (let i = 0; i < targetSize; i++) {
+        const baseNode = tree[baseRound][i];
+        const y = subY[0][i];
+        const entry = baseNode ? baseNode.entry : null;
+        const isFav = Boolean(entry && checkedIds.has(entry.id));
+        let labelStr = '未定';
+        if (entry) {
+          labelStr = OopEngine.formatSpectatorPairName(entry, nameMode, shortSchool);
+        } else if (baseNode && baseNode.sourceMatchKey && catalog.matchMap[baseNode.sourceMatchKey]) {
+          labelStr = `${catalog.matchMap[baseNode.sourceMatchKey].matchNo}の勝者`;
+        }
+        labelsHtml += `<div ${isFav ? 'data-spec-checked="1"' : ''}
+                            style="left:4px; top:${y - 11}px; width:${labelW - 10}px; height:22px;"
+                            class="absolute flex items-center gap-1.5 text-[11px] leading-snug rounded px-1 ${isFav ? 'bg-amber-200/90 ring-1 ring-amber-400' : ''}">
+          <span class="w-5 text-right font-bold ${isFav ? 'text-amber-900' : 'text-slate-400'} shrink-0">${i + 1}</span>
+          <span class="${entry ? 'font-bold text-slate-900' : 'font-medium text-slate-400 italic'} truncate">${isFav ? '★' : ''}${escapeHtml(labelStr)}</span>
+        </div>`;
+      }
+
+      for (let sr = 1; sr <= subRounds; sr++) {
+        const r = baseRound + sr;
+        const cnt = targetSize / Math.pow(2, sr);
+        const xCurr = labelW + sr * stepW;
+        const xPrev = labelW + (sr - 1) * stepW;
+        for (let m = 0; m < cnt; m++) {
+          const node = tree[r][m];
+          if (!node || !node.active) continue;
+          const y0 = subY[sr - 1][m * 2];
+          const y1 = subY[sr - 1][m * 2 + 1];
+          const yMid = subY[sr][m];
+          const res = node.result;
+          const w0 = Boolean(res && res.winner === 0);
+          const w1 = Boolean(res && res.winner === 1);
+          pushLine(xPrev, y0, xCurr, y0, w0 || (sr > 1 && reachedByWin(node.c0)));
+          pushLine(xCurr, y0, xCurr, yMid, w0);
+          pushLine(xPrev, y1, xCurr, y1, w1 || (sr > 1 && reachedByWin(node.c1)));
+          pushLine(xCurr, yMid, xCurr, y1, w1);
+          if (res) {
+            scoresSvg += `<text x="${xCurr - 7}" y="${y0 - 3}" text-anchor="middle" fill="#dc2626" font-size="10" font-weight="bold">${escapeHtml(res.g1)}</text>`;
+            scoresSvg += `<text x="${xCurr - 7}" y="${y1 + 10}" text-anchor="middle" fill="#dc2626" font-size="10" font-weight="bold">${escapeHtml(res.g2)}</text>`;
+          }
+        }
+      }
+
+      const finalNode = tree[totalRounds][0];
+      const finalX = labelW + subRounds * stepW;
+      const finalY = subY[subRounds][0];
+      pushLine(finalX, finalY, finalX + 20, finalY, Boolean(finalNode && finalNode.result));
+      if (finalNode && finalNode.entry) {
+        labelsHtml += `<div style="left:${finalX + 24}px; top:${finalY - 10}px;" class="absolute text-[11px] font-extrabold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded whitespace-nowrap">${escapeHtml(OopEngine.formatSpectatorPairName(finalNode.entry, nameMode, shortSchool))}</div>`;
+      }
+    } else {
+      // 全体 または A/B/C/D ブロック表示
+      let startSlot = 0;
+      let endSlot = size;
+      let maxRound = totalRounds;
+      if (blk !== 'ALL' && size >= 8) {
+        const qMap = { A: 0, D: 1, C: 2, B: 3 };
+        const qIdx = qMap[blk] ?? 0;
+        const qSize = size / 4;
+        startSlot = qIdx * qSize;
+        endSlot = startSlot + qSize;
+        maxRound = Math.max(1, totalRounds - 2);
+        viewHeading = `${blk}ブロック`;
+      }
+
+      const activeIndices = [];
+      for (let i = startSlot; i < endSlot; i++) {
+        if (tree[0][i] && tree[0][i].active) activeIndices.push(i);
+      }
+      const slotToDisplayNo = {};
+      let dispCnt = 1;
+      for (let i = 0; i < size; i++) {
+        if (tree[0][i] && tree[0][i].active) slotToDisplayNo[i] = dispCnt++;
+      }
+
+      const rowH = activeIndices.length >= 48 ? 26 : 30;
+      const stepW = Math.max(24, Math.min(40, Math.floor(180 / Math.max(1, maxRound))));
+      totalW = labelW + maxRound * stepW + 135;
+      totalH = Math.max(180, activeIndices.length * rowH + 28);
+
+      const nodeY = { 0: {} };
+      activeIndices.forEach((slotIdx, vRow) => {
+        nodeY[0][slotIdx] = vRow * rowH + rowH / 2 + 12;
+      });
+      for (let r = 1; r <= maxRound; r++) {
+        nodeY[r] = {};
+        const mStart = startSlot / Math.pow(2, r);
+        const mEnd = endSlot / Math.pow(2, r);
+        for (let m = mStart; m < mEnd; m++) {
+          const node = tree[r][m];
+          const y0 = nodeY[r - 1][m * 2];
+          const y1 = nodeY[r - 1][m * 2 + 1];
+          if (!node.active) nodeY[r][m] = 0;
+          else if (node.isBye) nodeY[r][m] = node.c0.active ? y0 : y1;
+          else nodeY[r][m] = (y0 + y1) / 2;
+        }
+      }
+      const effX = (node, round) => {
+        if (round === 0) return labelW;
+        if (node.isBye) return effX(node.c0.active ? node.c0 : node.c1, round - 1);
+        return labelW + round * stepW;
+      };
+
+      activeIndices.forEach((slotIdx) => {
+        const leaf = tree[0][slotIdx];
+        const y = nodeY[0][slotIdx];
+        const nameStr = leaf.entry ? OopEngine.formatSpectatorPairName(leaf.entry, nameMode, shortSchool) : '空き';
+        const isFav = Boolean(leaf.entry && checkedIds.has(leaf.entry.id));
+        labelsHtml += `<div ${isFav ? 'data-spec-checked="1"' : ''}
+                            style="left:4px; top:${y - 11}px; width:${labelW - 10}px; height:22px;"
+                            class="absolute flex items-center gap-1.5 text-[11px] leading-snug rounded px-1 ${isFav ? 'bg-amber-200/90 ring-1 ring-amber-400' : ''}">
+          <span class="w-5 text-right font-bold ${isFav ? 'text-amber-900' : 'text-slate-400'} shrink-0">${slotToDisplayNo[slotIdx]}</span>
+          <span class="font-bold text-slate-900 truncate">${isFav ? '★' : ''}${escapeHtml(nameStr)}</span>
+        </div>`;
+      });
+
+      for (let r = 1; r <= maxRound; r++) {
+        const xCurr = labelW + r * stepW;
+        const mStart = startSlot / Math.pow(2, r);
+        const mEnd = endSlot / Math.pow(2, r);
+        for (let m = mStart; m < mEnd; m++) {
+          const node = tree[r][m];
+          if (!node.active || node.isBye) continue;
+          const y0 = nodeY[r - 1][m * 2];
+          const y1 = nodeY[r - 1][m * 2 + 1];
+          const yMid = nodeY[r][m];
+          const x0 = effX(node.c0, r - 1);
+          const x1 = effX(node.c1, r - 1);
+          const res = node.result;
+          const w0 = Boolean(res && res.winner === 0);
+          const w1 = Boolean(res && res.winner === 1);
+          pushLine(x0, y0, xCurr, y0, w0 || reachedByWin(node.c0));
+          pushLine(xCurr, y0, xCurr, yMid, w0);
+          pushLine(x1, y1, xCurr, y1, w1 || reachedByWin(node.c1));
+          pushLine(xCurr, yMid, xCurr, y1, w1);
+          if (res) {
+            scoresSvg += `<text x="${xCurr - 7}" y="${y0 - 3}" text-anchor="middle" fill="#dc2626" font-size="10" font-weight="bold">${escapeHtml(res.g1)}</text>`;
+            scoresSvg += `<text x="${xCurr - 7}" y="${y1 + 10}" text-anchor="middle" fill="#dc2626" font-size="10" font-weight="bold">${escapeHtml(res.g2)}</text>`;
+          }
+        }
+      }
+
+      const endM = startSlot / Math.pow(2, maxRound);
+      const endNode = tree[maxRound][endM];
+      const finalX = labelW + maxRound * stepW;
+      const finalY = nodeY[maxRound][endM];
+      if (endNode && endNode.active) {
+        pushLine(finalX, finalY, finalX + 20, finalY, Boolean(endNode.result));
+        if (endNode.entry && (endNode.result || endNode.isBye)) {
+          labelsHtml += `<div style="left:${finalX + 24}px; top:${finalY - 10}px;" class="absolute text-[11px] font-extrabold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded whitespace-nowrap">${escapeHtml(OopEngine.formatSpectatorPairName(endNode.entry, nameMode, shortSchool))}</div>`;
         }
       }
     }
 
-    const finalNode = tree[totalRounds][0];
-    const finalX = labelW + totalRounds * stepW;
-    const finalY = nodeY[totalRounds][0];
-    pushLine(finalX, finalY, finalX + 20, finalY, Boolean(finalNode && finalNode.result));
-    if (finalNode && finalNode.entry) {
-      labelsHtml += `<div style="left:${finalX + 24}px; top:${finalY - 10}px;" class="absolute text-[11px] font-extrabold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded whitespace-nowrap">優勝: ${escapeHtml(OopEngine.formatSpectatorPairName(finalNode.entry, nameMode, shortSchool))}</div>`;
-    }
-
     const z = opsUi.spectator.bracketZoom;
-    const mountainJumpHtml = size >= 16 ? `
-      <div class="flex items-center gap-1">
-        <span class="text-[10px] font-bold text-slate-400">山:</span>
-        <button onclick="jumpSpectatorBracketMountain(0)" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-[10px] font-bold text-slate-700">A</button>
-        <button onclick="jumpSpectatorBracketMountain(1)" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-[10px] font-bold text-slate-700">D</button>
-        <button onclick="jumpSpectatorBracketMountain(2)" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-[10px] font-bold text-slate-700">C</button>
-        <button onclick="jumpSpectatorBracketMountain(3)" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-100 text-[10px] font-bold text-slate-700">B</button>
-      </div>` : '';
+    const stageOptions = [];
+    if (size > 32) stageOptions.push('32');
+    if (size > 16) stageOptions.push('16');
+    if (size > 8) stageOptions.push('8');
+
+    const pillCls = (act) => act
+      ? 'px-2 py-0.5 rounded-md bg-teal-700 text-white text-[10.5px] font-bold shadow-sm'
+      : 'px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10.5px] font-bold';
+
     return `
-      <div class="flex flex-wrap items-center justify-between gap-2 bg-white px-3 py-2 rounded-xl border border-slate-200">
-        ${mountainJumpHtml || '<span class="text-[11px] font-bold text-slate-600">横スクロール＆拡大縮小できます</span>'}
-        <div class="flex items-center gap-1">
-          <button onclick="adjustSpectatorBracketZoom(-0.12)" class="w-6 h-6 rounded bg-slate-100 font-bold text-slate-700">-</button>
-          <span class="text-[11px] font-bold text-slate-700 w-10 text-center">${Math.round(z * 100)}%</span>
-          <button onclick="adjustSpectatorBracketZoom(0.12)" class="w-6 h-6 rounded bg-slate-100 font-bold text-slate-700">+</button>
+      <div class="bg-white rounded-2xl border border-slate-200 p-2.5 space-y-2 shadow-sm">
+        <!-- ② ブロック分割 ＆ ベスト32/16/8 絞り込み -->
+        <div class="flex flex-wrap items-center justify-between gap-1.5">
+          <div class="flex flex-wrap items-center gap-1">
+            <button onclick="setSpectatorBracketBlock('ALL'); setSpectatorBracketStage('ALL');" class="${pillCls(blk === 'ALL' && stage === 'ALL')}">全回戦</button>
+            ${stageOptions.map((st) => `
+              <button onclick="setSpectatorBracketStage('${st}')" class="${pillCls(stage === st)}">ベスト${st}</button>
+            `).join('')}
+          </div>
+          ${size >= 8 ? `
+            <div class="flex items-center gap-1">
+              <span class="text-[10px] font-bold text-slate-400">山:</span>
+              ${['A', 'B', 'C', 'D'].map((b) => `
+                <button onclick="setSpectatorBracketBlock('${b}')" class="${pillCls(blk === b && stage === 'ALL')}">${b}</button>
+              `).join('')}
+            </div>` : ''}
+        </div>
+
+        <!-- ズーム・フィット・★ジャンプ -->
+        <div class="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-slate-100">
+          <span class="text-[10.5px] font-extrabold text-teal-800">${escapeHtml(viewHeading)}</span>
+          <div class="flex items-center gap-1">
+            ${checkedIds.size > 0 ? `<button onclick="jumpSpectatorToFirstChecked()" class="px-2 py-0.5 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-900 text-[10px] font-bold">★位置へ</button>` : ''}
+            <button onclick="fitSpectatorBracketZoom()" class="px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold">フィット</button>
+            <button onclick="adjustSpectatorBracketZoom(-0.12)" class="w-6 h-6 rounded bg-slate-100 font-bold text-slate-700">-</button>
+            <span class="text-[10.5px] font-bold text-slate-700 w-9 text-center">${Math.round(z * 100)}%</span>
+            <button onclick="adjustSpectatorBracketZoom(0.12)" class="w-6 h-6 rounded bg-slate-100 font-bold text-slate-700">+</button>
+          </div>
         </div>
       </div>
-      <div id="spec-bracket-scroll" class="bg-white rounded-xl border border-slate-200 p-3 overflow-auto shadow-sm" style="max-height:560px;">
+
+      <div id="spec-bracket-scroll" class="bg-white rounded-2xl border border-slate-200 p-3 overflow-auto shadow-sm" style="max-height:560px;">
         <div style="width:${Math.ceil(totalW * z)}px; height:${Math.ceil(totalH * z)}px; position:relative;">
-          <div style="transform:scale(${z}); transform-origin:top left; width:${totalW}px; height:${totalH}px; position:relative;">
+          <div id="spec-bracket-inner" data-raw-width="${totalW}" style="transform:scale(${z}); transform-origin:top left; width:${totalW}px; height:${totalH}px; position:relative;">
             <svg width="${totalW}" height="${totalH}" class="absolute inset-0 pointer-events-none">${blackLines}${redLines}${scoresSvg}</svg>
             ${labelsHtml}
           </div>
@@ -2787,75 +3243,37 @@
     `;
   }
 
-  function renderSpectatorSearchTab(ev, evData, catalog, oop, nameMode, shortSchool, pairFmt) {
+  function renderSpectatorSearchTab(ev, evData, catalog, oop, nameMode, shortSchool, pairFmt, metrics) {
     const entries = Array.isArray(evData.entries) ? evData.entries : [];
     const schools = Array.from(new Set(entries.map((e) => e.school).filter(Boolean)));
     const q = opsUi.spectator.searchQuery.trim().toLowerCase();
-
-    // 各ペアのコート状況＆試合履歴を算出
-    const matchCourtMap = {};
-    Object.keys(oop.courts || {}).forEach((cKey) => {
-      (oop.courts[cKey] || []).forEach((mKey, idx) => {
-        matchCourtMap[mKey] = { court: cKey, order: idx + 1 };
-      });
-    });
-
-    const getEntryStatusAndMatches = (entry) => {
-      const related = catalog.matches.filter(
-        (m) => (m.p1Entry && m.p1Entry.id === entry.id) || (m.p2Entry && m.p2Entry.id === entry.id)
-      );
-      let badge = { text: '待機中', cls: 'bg-slate-100 text-slate-600' };
-      const activeMatch = related.find((m) => {
-        const st = oop.statuses[m.key];
-        return st === 'playing' || st === 'calling';
-      });
-      if (activeMatch) {
-        const st = oop.statuses[activeMatch.key];
-        const loc = matchCourtMap[activeMatch.key];
-        badge = st === 'playing'
-          ? { text: `コート${loc ? loc.court : '?'} 試合中`, cls: 'bg-rose-600 text-white' }
-          : { text: `コート${loc ? loc.court : '?'} コール中`, cls: 'bg-amber-500 text-white' };
-      } else {
-        const nextMatch = related.find((m) => !m.isFinished);
-        if (nextMatch) {
-          const loc = matchCourtMap[nextMatch.key];
-          badge = { text: `次: コート${loc ? loc.court : '?'} (${nextMatch.matchNo})`, cls: 'bg-blue-100 text-blue-800' };
-        } else if (related.length > 0) {
-          const last = related[related.length - 1];
-          const wonLast = last.winnerEntry && last.winnerEntry.id === entry.id;
-          badge = wonLast
-            ? { text: '勝ち上がり済', cls: 'bg-emerald-100 text-emerald-800' }
-            : { text: '試合終了', cls: 'bg-slate-200 text-slate-600' };
-        }
-      }
-      return { badge, related };
-    };
-
+    const { matchCourtMap, getEntryStatus } = metrics || buildSpectatorEntryMetrics(ev.id, evData, catalog, oop);
     const makeFavKey = (entry) => `${ev.id}::${entry.id}`;
 
     const renderEntryCard = (entry) => {
       const favKey = makeFavKey(entry);
       const isFav = opsUi.spectator.favorites.has(favKey);
-      const { badge, related } = getEntryStatusAndMatches(entry);
+      const st = getEntryStatus(entry);
       const dispName = pairFmt(entry);
       return `
         <div class="bg-white rounded-xl border ${isFav ? 'border-amber-300 ring-1 ring-amber-200' : 'border-slate-200'} p-2.5 space-y-1.5 shadow-sm">
           <div class="flex items-start justify-between gap-2">
             <div class="min-w-0">
               <div class="text-xs font-extrabold text-slate-900 leading-snug">${escapeHtml(dispName)}</div>
-              <div class="mt-1 inline-flex items-center gap-1.5">
-                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${badge.cls}">${escapeHtml(badge.text)}</span>
+              <div class="mt-1 inline-flex items-center gap-1.5 flex-wrap">
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${st.badge.cls}">${escapeHtml(st.badge.text)}</span>
+                ${st.targetCourt ? `<button onclick="focusSpectatorCourt('${escapeJs(st.targetCourt)}')" class="text-[10px] font-bold text-teal-700 hover:underline">コート${st.targetCourt}を見る ▸</button>` : ''}
               </div>
             </div>
             <button onclick="toggleSpectatorFavorite('${escapeJs(favKey)}')"
                     class="px-2 py-1 rounded-lg text-sm leading-none transition ${isFav ? 'bg-amber-100 text-amber-500' : 'bg-slate-100 text-slate-400 hover:text-amber-500'}"
-                    title="お気に入り登録">
+                    title="マイチェックに登録（画面上部に固定表示）">
               ${isFav ? '★' : '☆'}
             </button>
           </div>
-          ${related.length > 0 ? `
+          ${st.related.length > 0 ? `
             <div class="pt-1.5 border-t border-slate-100 space-y-1 text-[10px]">
-              ${related.map((m) => {
+              ${st.related.map((m) => {
                 const loc = matchCourtMap[m.key];
                 const isP1 = m.p1Entry && m.p1Entry.id === entry.id;
                 const opp = isP1 ? m.p2Label : m.p1Label;
@@ -2878,12 +3296,37 @@
       return hay.includes(q);
     });
 
+    // オリジナル要素：学校選択時のリアルタイム戦績パルスバー
+    let schoolPulseHtml = '';
+    if (opsUi.spectator.schoolFilter !== 'ALL') {
+      const scEntries = entries.filter((e) => e.school === opsUi.spectator.schoolFilter);
+      let alive = 0;
+      let scPlaying = 0;
+      let scNext = 0;
+      scEntries.forEach((e) => {
+        const s = getEntryStatus(e);
+        if (s.stateKind !== 'eliminated') alive++;
+        if (s.stateKind === 'playing' || s.stateKind === 'calling') scPlaying++;
+        if (s.stateKind === 'next') scNext++;
+      });
+      schoolPulseHtml = `
+        <div class="rounded-xl bg-gradient-to-r from-teal-900 to-slate-900 text-white px-3 py-2 flex items-center justify-between gap-2 text-[11px]">
+          <div class="font-extrabold truncate">${escapeHtml(shortSchool(opsUi.spectator.schoolFilter))} ライブ状況</div>
+          <div class="flex items-center gap-2 shrink-0 text-[10px] font-bold">
+            <span class="px-1.5 py-0.5 rounded bg-white/15">勝ち残り ${alive}/${scEntries.length}</span>
+            ${scPlaying > 0 ? `<span class="px-1.5 py-0.5 rounded bg-rose-500">試合中 ${scPlaying}</span>` : ''}
+            ${scNext > 0 ? `<span class="px-1.5 py-0.5 rounded bg-blue-500">次試合 ${scNext}</span>` : ''}
+          </div>
+        </div>
+      `;
+    }
+
     return `
       <div class="space-y-2">
         <input type="text" id="spec-search-input" value="${escapeHtml(opsUi.spectator.searchQuery)}"
                oninput="setSpectatorSearchQuery(this.value)"
                placeholder="選手名・学校名で検索..."
-               class="w-full px-3 py-2 text-xs font-bold bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-emerald-500 shadow-sm" />
+               class="w-full px-3 py-2 text-xs font-bold bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-teal-600 shadow-sm" />
         <div class="flex items-center gap-1.5 overflow-x-auto pb-1">
           <button onclick="setSpectatorSchoolFilter('ALL')"
                   class="px-2.5 py-1 rounded-full text-[11px] font-bold shrink-0 ${opsUi.spectator.schoolFilter === 'ALL' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600'}">
@@ -2891,17 +3334,18 @@
           </button>
           ${schools.map((sc) => `
             <button onclick="setSpectatorSchoolFilter('${escapeJs(sc)}')"
-                    class="px-2.5 py-1 rounded-full text-[11px] font-bold shrink-0 ${opsUi.spectator.schoolFilter === sc ? 'bg-emerald-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}">
+                    class="px-2.5 py-1 rounded-full text-[11px] font-bold shrink-0 ${opsUi.spectator.schoolFilter === sc ? 'bg-teal-700 text-white' : 'bg-white border border-slate-200 text-slate-600'}">
               ${escapeHtml(shortSchool(sc))}
             </button>
           `).join('')}
         </div>
+        ${schoolPulseHtml}
       </div>
 
       ${favEntries.length > 0 ? `
         <div class="space-y-1.5">
           <div class="text-[11px] font-extrabold text-amber-800 flex items-center gap-1">
-            <span>★ お気に入り登録（${favEntries.length}ペア）</span>
+            <span>★ マイチェック登録（${favEntries.length}組）</span>
           </div>
           ${favEntries.map(renderEntryCard).join('')}
         </div>` : ''}
@@ -3061,66 +3505,15 @@
       return;
     }
 
-    const evData = liveEvent.data;
-    const aliases = evData.schoolAliases || {};
-    const shortSchool = (raw) => {
-      const k = String(raw || '').trim();
-      if (Object.prototype.hasOwnProperty.call(aliases, k) && String(aliases[k] || '').trim()) return String(aliases[k]).trim();
-      return formatSchoolShortName(k);
-    };
-    const nameMode = meta.nameDisplayMode || 'full';
-    const pairFmt = (entry) => OopEngine.formatSpectatorPairName(entry, nameMode, shortSchool);
-    const catalog = OopEngine.buildMatchCatalog({
-      bracketSize: evData.bracketSize || 16,
-      slots: evData.slots || [],
-      activeSlotMask: evData.activeSlotMask || [],
-      results: evData.results || {},
-      consolation: evData.consolation || null,
-      labelFormatter: pairFmt
+    renderUnifiedSpectatorPortal(frame, {
+      tournamentName: meta.name,
+      eventsList: meta.events || [],
+      activeEvent: liveEvent,
+      evData: liveEvent.data,
+      nameMode: meta.nameDisplayMode || 'full',
+      tourAnnouncement: meta.announcement,
+      isStandalone: true
     });
-    const oop = OopEngine.reconcileOopState(evData.oop, catalog).oop;
-
-    const tab = opsUi.spectator.tab;
-    let bodyHtml = '';
-    if (tab === 'courts') bodyHtml = renderSpectatorCourtsTab(catalog, oop, pairFmt);
-    else if (tab === 'bracket') bodyHtml = renderSpectatorBracketTab(evData, catalog, nameMode, shortSchool);
-    else bodyHtml = renderSpectatorSearchTab(liveEvent, evData, catalog, oop, nameMode, shortSchool, pairFmt);
-
-    frame.innerHTML = `
-      <div class="bg-slate-900 text-white px-4 py-3 space-y-2 shrink-0">
-        <div class="flex items-start justify-between gap-2">
-          <div class="min-w-0">
-            <div class="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400">
-              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 live-dot"></span>
-              <span>LIVE リアルタイム速報（自動更新中）</span>
-            </div>
-            <h2 class="text-sm sm:text-base font-extrabold leading-tight truncate mt-0.5">${escapeHtml(meta.name)}</h2>
-          </div>
-          <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 shrink-0">${escapeHtml(oop.venue || liveEvent.venue || '第1会場')}</span>
-        </div>
-        <div class="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-          ${(meta.events || []).map((item) => {
-            const act = item.id === liveEvent.id;
-            return `<button onclick="selectStandalonePublicEvent('${escapeJs(item.id)}')"
-                            class="px-2.5 py-1 text-[11px] font-bold rounded-full shrink-0 transition ${act ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}">
-                      ${escapeHtml(item.name)}
-                    </button>`;
-          }).join('')}
-        </div>
-      </div>
-
-      ${renderAnnouncementBannersHtml(meta.announcement, oop.announcement, oop.venue || liveEvent.venue)}
-
-      <div class="bg-white border-b border-slate-200 grid grid-cols-3 shrink-0 sticky top-0 z-10">
-        <button onclick="setStandaloneSpectatorTab('courts')" class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'courts' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500'}">コート状況</button>
-        <button onclick="setStandaloneSpectatorTab('bracket')" class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'bracket' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500'}">トーナメント表</button>
-        <button onclick="setStandaloneSpectatorTab('search')" class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'search' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500'}">選手・学校検索</button>
-      </div>
-
-      <div class="flex-1 overflow-auto p-3 space-y-3 bg-slate-50">
-        ${bodyHtml}
-      </div>
-    `;
   }
 
   async function submitStandalonePasscode() {
@@ -3595,6 +3988,13 @@
   window.setSpectatorSearchQuery = setSpectatorSearchQuery;
   window.setSpectatorSchoolFilter = setSpectatorSchoolFilter;
   window.adjustSpectatorBracketZoom = adjustSpectatorBracketZoom;
+  window.setSpectatorCourtFilter = setSpectatorCourtFilter;
+  window.toggleSpectatorCourtExpand = toggleSpectatorCourtExpand;
+  window.setSpectatorBracketBlock = setSpectatorBracketBlock;
+  window.setSpectatorBracketStage = setSpectatorBracketStage;
+  window.fitSpectatorBracketZoom = fitSpectatorBracketZoom;
+  window.jumpSpectatorToFirstChecked = jumpSpectatorToFirstChecked;
+  window.focusSpectatorCourt = focusSpectatorCourt;
 
   // 初期化（app.js の init 完了後に実行）
   initBundle();
