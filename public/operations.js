@@ -640,6 +640,10 @@
     }
     const courtSel = document.getElementById('oop-court-count-select');
     if (courtSel) courtSel.value = String(state.oop.courtCount || 4);
+    const settingsSummary = document.getElementById('oop-settings-summary');
+    if (settingsSummary) {
+      settingsSummary.textContent = `${state.oop.venue || '第1会場'}・${state.oop.courtCount || 4}面`;
+    }
 
     const btnBlock = document.getElementById('btn-oop-mode-block');
     const btnRound = document.getElementById('btn-oop-mode-round');
@@ -2376,8 +2380,8 @@
     const btnF = document.getElementById('btn-spec-frame-full');
     if (frame) {
       frame.className = opsUi.spectator.frameMode === 'full'
-        ? 'w-full max-w-6xl min-h-[720px] bg-slate-50 text-slate-900 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden flex flex-col'
-        : 'w-full max-w-[400px] min-h-[720px] bg-slate-50 text-slate-900 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden flex flex-col';
+        ? 'w-full max-w-6xl h-full min-h-0 bg-slate-50 text-slate-900 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden flex flex-col'
+        : 'w-full max-w-[400px] h-full max-h-[820px] min-h-0 bg-slate-50 text-slate-900 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden flex flex-col';
     }
     if (btnM && btnF) {
       const on = 'px-2 py-0.5 text-[11px] font-bold rounded bg-blue-600 text-white';
@@ -3931,7 +3935,7 @@
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
             <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
               <div class="text-[10px] font-extrabold text-blue-600">STEP 1</div>
-              <div class="font-extrabold text-slate-900">名簿・自動抽選</div>
+              <div class="font-extrabold text-slate-900">選手登録・自動抽選</div>
               <div class="text-[11px] text-slate-500 leading-snug">Excel読込から4山・シード規則で自動配置＆微調整</div>
             </div>
             <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
@@ -3971,7 +3975,7 @@
           <div class="grid grid-cols-3 gap-2">
             <button onclick="switchMainView('registration')"
                     class="py-2.5 px-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-300 text-xs font-extrabold text-slate-800 transition">
-              1. 名簿・設定
+              1. 選手登録・設定
             </button>
             <button onclick="switchMainView('tournament')"
                     class="py-2.5 px-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-300 text-xs font-extrabold text-slate-800 transition">
@@ -4013,6 +4017,46 @@
   window.setHomeSearchQuery = setHomeSearchQuery;
   window.startSampleFromHome = startSampleFromHome;
   window.openJsonImportFromHome = openJsonImportFromHome;
+
+  function toggleOopSettingsMenu() {
+    const pop = document.getElementById('oop-settings-popover');
+    const exp = document.getElementById('oop-export-popover');
+    if (exp) exp.classList.add('hidden');
+    if (pop) pop.classList.toggle('hidden');
+  }
+
+  function toggleOopExportMenu() {
+    const pop = document.getElementById('oop-export-popover');
+    const set = document.getElementById('oop-settings-popover');
+    if (set) set.classList.add('hidden');
+    if (pop) pop.classList.toggle('hidden');
+  }
+
+  function closeOopMenus() {
+    document.getElementById('oop-settings-popover')?.classList.add('hidden');
+    document.getElementById('oop-export-popover')?.classList.add('hidden');
+  }
+
+  document.addEventListener('click', (e) => {
+    const setPop = document.getElementById('oop-settings-popover');
+    const setBtn = document.getElementById('btn-oop-settings-menu');
+    if (setPop && !setPop.classList.contains('hidden')) {
+      if (!setPop.contains(e.target) && (!setBtn || !setBtn.contains(e.target))) {
+        setPop.classList.add('hidden');
+      }
+    }
+    const expPop = document.getElementById('oop-export-popover');
+    const expBtn = document.getElementById('btn-oop-export-menu');
+    if (expPop && !expPop.classList.contains('hidden')) {
+      if (!expPop.contains(e.target) && (!expBtn || !expBtn.contains(e.target))) {
+        expPop.classList.add('hidden');
+      }
+    }
+  });
+
+  window.toggleOopSettingsMenu = toggleOopSettingsMenu;
+  window.toggleOopExportMenu = toggleOopExportMenu;
+  window.closeOopMenus = closeOopMenus;
 
   window.setOopSplitBlock = setOopSplitBlock;
   window.toggleOopConflictsDrawer = toggleOopConflictsDrawer;

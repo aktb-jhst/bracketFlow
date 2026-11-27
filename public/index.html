@@ -32,9 +32,11 @@
 
   <!-- トップヘッダー：レスポンシブ対応＆アカウント連携 -->
   <header class="no-print bg-slate-900 text-white px-2.5 sm:px-4 min-h-[48px] py-1 flex flex-wrap items-center justify-between gap-2 shadow-md z-30 shrink-0">
-    <!-- 左側：ロゴ＆画面切替 -->
+    <!-- 左側：ホーム兼用ロゴ ＆ 4ステップ進行メニュー -->
     <div class="flex items-center gap-2 min-w-0 flex-wrap">
-      <button type="button" onclick="switchMainView('home')" class="flex items-center gap-2 shrink-0 text-left hover:opacity-90 transition" title="大会ホームへ戻る">
+      <button type="button" id="main-tab-home" onclick="switchMainView('home')"
+              class="flex items-center gap-2 px-1.5 py-1 rounded-lg border border-transparent hover:bg-slate-800 transition shrink-0 text-left"
+              title="大会ホームへ戻る">
         <span class="w-7 h-7 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-600 text-slate-950 flex items-center justify-center shadow-sm" aria-hidden="true">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 6h5v5H4" />
@@ -43,21 +45,17 @@
             <path d="M14 12h6" />
           </svg>
         </span>
-        <div class="leading-tight hidden lg:block">
+        <div class="leading-tight hidden md:block">
           <h1 class="text-sm font-bold tracking-tight text-white">BracketFlow</h1>
-          <div class="text-[9px] text-slate-400 font-medium tracking-wider">TOURNAMENT STUDIO</div>
+          <div class="text-[9px] text-slate-400 font-medium tracking-wider">大会ホーム</div>
         </div>
       </button>
 
-      <!-- メイン画面タブ -->
+      <!-- メイン画面タブ（4ステップ） -->
       <nav class="flex items-center bg-slate-800/90 p-0.5 rounded-lg border border-slate-700/80 shrink-0">
-        <button id="main-tab-home" onclick="switchMainView('home')"
-                class="px-2 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold rounded-md text-slate-300 hover:text-white transition flex items-center gap-1 whitespace-nowrap">
-          <span>ホーム</span>
-        </button>
         <button id="main-tab-reg" onclick="switchMainView('registration')"
                 class="px-2 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold rounded-md bg-blue-600 text-white shadow transition flex items-center gap-1 whitespace-nowrap">
-          <span>1. 名簿</span>
+          <span>1. 選手登録</span>
           <span id="reg-count-pill" class="bg-slate-950/40 text-blue-100 text-[10px] px-1.5 py-0.2 rounded-full">0組</span>
         </button>
         <button id="main-tab-tourney" onclick="switchMainView('tournament')"
@@ -77,21 +75,16 @@
       </nav>
 
       <button id="btn-open-publish-modal" onclick="openPublishModal()"
-              class="hidden xl:inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition shrink-0"
+              class="hidden lg:inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition shrink-0"
               title="公開ON/OFF・パスコード・名字のみ表示・QRコード・スタッフPIN設定">
         <span id="header-publish-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
         <span>公開・QR</span>
       </button>
     </div>
 
-    <!-- 右側：アカウント・クラウド保存・外部保存・印刷 -->
+    <!-- 右側：アカウント・データ保存/読込・印刷設定/印刷（スッキリ3グループ） -->
     <div class="flex items-center gap-1.5 shrink-0">
-      <!-- クラウド状態 ＆ Googleアカウント連携 -->
-      <span class="hidden 2xl:inline-flex items-center gap-1 text-[10px] text-slate-300 bg-slate-800/80 border border-slate-700 px-2 py-1 rounded-md">
-        <span id="cloud-sync-dot" class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
-        <span id="cloud-sync-text">ローカル保存</span>
-      </span>
-
+      <!-- 1. アカウント＆クラウド -->
       <button id="btn-google-login" onclick="signInWithGoogle()"
               class="px-2.5 py-1 text-[11px] font-bold rounded-md bg-white hover:bg-slate-100 text-slate-900 shadow-sm transition flex items-center gap-1.5 whitespace-nowrap"
               title="Googleアカウントでログインして過去の大会を保存・呼び出し＆リアルタイム公開">
@@ -107,9 +100,10 @@
           <span>マイ大会</span>
         </button>
         <button onclick="syncNowToCloud()"
-                class="px-1.5 py-0.5 text-[10px] font-bold rounded text-emerald-300 hover:bg-slate-700 transition whitespace-nowrap"
-                title="今すぐクラウド保存・公開ページ同期">
-          同期
+                class="px-2 py-0.5 text-[10px] font-bold rounded text-emerald-300 hover:bg-slate-700 transition whitespace-nowrap flex items-center gap-1"
+                title="今すぐクラウド保存・公開ページへ同期">
+          <span id="cloud-sync-dot" class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+          <span>同期</span>
         </button>
         <button onclick="signOutGoogle()"
                 class="px-1.5 py-0.5 text-[10px] font-bold rounded text-slate-300 hover:text-white hover:bg-slate-700 transition whitespace-nowrap"
@@ -119,74 +113,112 @@
       </div>
 
       <div class="h-4 w-px bg-slate-700 mx-0.5 hidden sm:block"></div>
-      <!-- 保存ドロップダウン（JSON / Excel / PDF） -->
+
+      <!-- 2. データ・保存 統合ドロップダウン（クラウド状態 / JSON / Excel / PDF / 読込） -->
       <div class="relative">
         <button id="btn-export-menu" onclick="toggleExportMenu()"
-                class="px-2.5 py-1 text-xs bg-emerald-600 hover:bg-emerald-500 border border-emerald-500 rounded-md text-white font-bold transition flex items-center gap-1 shadow-sm"
-                title="JSON / Excel / PDF形式で保存">
-          <span>保存</span>
-          <span class="text-[10px] opacity-85">▾</span>
+                class="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-md text-white font-bold transition flex items-center gap-1.5 shadow-sm whitespace-nowrap"
+                title="保存状態の確認、JSON / Excel / PDF書き出し、ファイル読み込み">
+          <span>データ・保存</span>
+          <span class="text-[10px] opacity-80">▾</span>
         </button>
 
-        <div id="export-menu-popover" class="hidden absolute right-0 top-full mt-1.5 w-64 bg-white text-slate-800 rounded-xl shadow-2xl border border-slate-200 p-1.5 z-50 space-y-1">
+        <div id="export-menu-popover" class="hidden absolute right-0 top-full mt-1.5 w-72 bg-white text-slate-800 rounded-xl shadow-2xl border border-slate-200 p-2 z-50 space-y-1.5">
+          <!-- 保存ステータス＆クラウド同期 -->
+          <div class="px-2.5 py-2 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between gap-2">
+            <div class="min-w-0">
+              <div class="text-[10px] font-bold text-slate-400">現在の保存状態</div>
+              <div id="cloud-sync-text" class="text-[11px] font-extrabold text-slate-800 truncate">ローカル自動保存</div>
+            </div>
+            <button onclick="syncNowToCloud(); closeExportMenu();"
+                    class="px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold shrink-0 transition">
+              ☁ クラウド保存
+            </button>
+          </div>
+
+          <div class="text-[10px] font-bold text-slate-400 px-2 pt-0.5">ファイル書き出し</div>
           <button onclick="exportJsonState(); closeExportMenu();"
-                  class="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-100 transition flex items-start gap-2.5">
+                  class="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-slate-100 transition flex items-start gap-2.5">
             <span class="mt-0.5 px-1.5 py-0.5 text-[10px] font-bold rounded bg-slate-200 text-slate-800 shrink-0">JSON</span>
             <div class="min-w-0">
               <div class="text-xs font-bold text-slate-900">JSON形式で保存（バックアップ）</div>
-              <div class="text-[10px] text-slate-500">名簿・配置・塗色・スコアを完全保存</div>
+              <div class="text-[10px] text-slate-500">選手・配置・進行表・スコアを完全保存</div>
             </div>
           </button>
           <button onclick="exportExcelState(); closeExportMenu();"
-                  class="w-full text-left px-3 py-2 rounded-lg hover:bg-emerald-50 transition flex items-start gap-2.5">
+                  class="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-emerald-50 transition flex items-start gap-2.5">
             <span class="mt-0.5 px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-100 text-emerald-800 shrink-0">XLSX</span>
             <div class="min-w-0">
               <div class="text-xs font-bold text-slate-900">Excel形式で保存（3シート）</div>
-              <div class="text-[10px] text-slate-500">出場名簿・トーナメント配置・試合結果</div>
+              <div class="text-[10px] text-slate-500">出場選手・トーナメント配置・試合結果</div>
             </div>
           </button>
           <button onclick="exportPdfState(); closeExportMenu();"
-                  class="w-full text-left px-3 py-2 rounded-lg hover:bg-rose-50 transition flex items-start gap-2.5">
+                  class="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-rose-50 transition flex items-start gap-2.5">
             <span class="mt-0.5 px-1.5 py-0.5 text-[10px] font-bold rounded bg-rose-100 text-rose-800 shrink-0">PDF</span>
             <div class="min-w-0">
               <div class="text-xs font-bold text-slate-900">PDFファイルで保存</div>
               <div class="text-[10px] text-slate-500">現在の印刷設定（配布/確認・縦横・塗）で出力</div>
             </div>
           </button>
+
+          <div class="border-t border-slate-100 pt-1.5">
+            <label class="w-full px-2.5 py-1.5 rounded-lg hover:bg-blue-50 transition flex items-center gap-2.5 cursor-pointer">
+              <span class="px-1.5 py-0.5 text-[10px] font-bold rounded bg-blue-100 text-blue-800 shrink-0">読込</span>
+              <div class="min-w-0">
+                <div class="text-xs font-bold text-slate-900">JSONファイルを読み込む</div>
+                <div class="text-[10px] text-slate-500">バックアップから大会を復元</div>
+              </div>
+              <input type="file" id="json-import-input" accept=".json" class="hidden" onchange="importJsonState(event); closeExportMenu();" />
+            </label>
+          </div>
         </div>
       </div>
 
-      <label class="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-md text-slate-200 cursor-pointer transition"
-             title="保存したJSONファイルを読み込み">
-        読込
-        <input type="file" id="json-import-input" accept=".json" class="hidden" onchange="importJsonState(event)" />
-      </label>
+      <!-- 3. 印刷設定ポップオーバー ＆ 印刷/PDF -->
+      <div class="relative flex items-center gap-1">
+        <button id="btn-print-settings-menu" onclick="togglePrintSettingsMenu()"
+                class="px-2 py-1 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-md text-slate-200 font-bold transition flex items-center gap-1"
+                title="印刷設定（配布用/確認用・塗りつぶし・A4縦横）">
+          <span>⚙</span>
+          <span class="hidden lg:inline text-[11px]">印刷設定</span>
+        </button>
 
-      <div class="h-4 w-px bg-slate-700 mx-0.5 hidden sm:block"></div>
+        <div id="print-settings-popover" class="hidden absolute right-0 top-full mt-1.5 w-64 bg-white text-slate-800 rounded-xl shadow-2xl border border-slate-200 p-3 z-50 space-y-2.5">
+          <div class="text-xs font-extrabold text-slate-900 border-b border-slate-100 pb-1.5">トーナメント印刷・PDF設定</div>
 
-      <!-- 印刷モード切替（配布用/確認用・塗りつぶし印刷ON/OFF・縦/横） -->
-      <div class="hidden sm:flex items-center bg-slate-800 p-0.5 rounded-md border border-slate-700 gap-0.5">
-        <button id="btn-print-dist" onclick="setPrintMode('distribution')" class="px-2 py-0.5 text-[11px] rounded font-bold bg-emerald-600 text-white transition" title="印刷時に確認用バッジ（略称＋番手）を隠す">配布用</button>
-        <button id="btn-print-check" onclick="setPrintMode('check')" class="px-2 py-0.5 text-[11px] rounded font-bold text-slate-300 hover:text-white transition" title="印刷時に確認用バッジ（略称＋番手）を表示">確認用</button>
+          <div class="space-y-1">
+            <div class="text-[10px] font-bold text-slate-500">出力モード</div>
+            <div class="grid grid-cols-2 bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
+              <button id="btn-print-dist" onclick="setPrintMode('distribution')" class="px-2 py-1 text-[11px] rounded-md font-bold bg-emerald-600 text-white transition" title="印刷時に確認用バッジ（略称＋番手）や重複塗りを隠す">配布用</button>
+              <button id="btn-print-check" onclick="setPrintMode('check')" class="px-2 py-1 text-[11px] rounded-md font-bold text-slate-600 hover:text-slate-900 transition" title="印刷時に確認用バッジ（略称＋番手）を表示">確認用</button>
+            </div>
+          </div>
+
+          <div class="space-y-1">
+            <div class="text-[10px] font-bold text-slate-500">用紙の向き</div>
+            <div class="grid grid-cols-2 bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
+              <button id="btn-orient-portrait" onclick="setPrintOrientation('portrait')" class="px-2 py-1 text-[11px] rounded-md font-bold bg-slate-700 text-white transition">A4 縦</button>
+              <button id="btn-orient-landscape" onclick="setPrintOrientation('landscape')" class="px-2 py-1 text-[11px] rounded-md font-bold text-slate-600 hover:text-slate-900 transition">A4 横</button>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between pt-1 border-t border-slate-100">
+            <span class="text-[11px] font-bold text-slate-700">枠の塗りつぶしを印刷</span>
+            <button id="btn-print-fills-toggle" onclick="togglePrintFills()"
+                    class="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded-md font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition">
+              <span>印刷塗:</span>
+              <span id="print-fills-header-state">ON</span>
+            </button>
+          </div>
+        </div>
+
+        <button onclick="executePrint()"
+                class="px-2.5 sm:px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-md shadow transition flex items-center gap-1.5 whitespace-nowrap">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
+          <span>印刷 / PDF</span>
+        </button>
       </div>
-
-      <button id="btn-print-fills-toggle" onclick="togglePrintFills()"
-              class="hidden md:inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-md font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/50 transition"
-              title="印刷・PDF出力時に任意の塗りつぶしを含めるか切り替え">
-        <span>印刷塗:</span>
-        <span id="print-fills-header-state">ON</span>
-      </button>
-
-      <div class="hidden lg:flex items-center bg-slate-800 p-0.5 rounded-md border border-slate-700 gap-0.5">
-        <button id="btn-orient-portrait" onclick="setPrintOrientation('portrait')" class="px-2 py-0.5 text-[11px] rounded font-bold bg-slate-600 text-white transition">A4縦</button>
-        <button id="btn-orient-landscape" onclick="setPrintOrientation('landscape')" class="px-2 py-0.5 text-[11px] rounded font-bold text-slate-300 hover:text-white transition">A4横</button>
-      </div>
-
-      <button onclick="executePrint()"
-              class="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-md shadow transition flex items-center gap-1.5">
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
-        <span>印刷 / PDF</span>
-      </button>
     </div>
   </header>
 
@@ -290,11 +322,19 @@
             </div>
           </div>
 
-          <button onclick="generateAndOpenTournament()"
-                  class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold rounded-lg shadow-sm transition flex items-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-            <span>トーナメント自動生成して開く</span>
-          </button>
+          <div class="flex flex-wrap items-center gap-2">
+            <!-- 作成済み時の安全な移動ボタン（誤再抽選防止） -->
+            <button id="btn-open-existing-bracket" onclick="switchMainView('tournament')"
+                    class="hidden px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs sm:text-sm font-bold rounded-lg shadow-sm transition flex items-center gap-1.5">
+              <span>作成済みトーナメントを開く →</span>
+            </button>
+
+            <button id="btn-generate-bracket-main" onclick="generateAndOpenTournament()"
+                    class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold rounded-lg shadow-sm transition flex items-center gap-2">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+              <span id="btn-generate-bracket-label">トーナメント自動生成して開く</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -310,7 +350,7 @@
               <div class="flex items-center justify-between gap-2">
                 <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                   <span class="w-1.5 h-3.5 bg-emerald-500 rounded-full"></span>
-                  Excel / CSV 名簿読込（4項目）
+                  Excel / CSV 選手データ読込（4項目）
                 </h2>
                 <button onclick="downloadSampleExcel()" class="text-[11px] bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded font-bold transition shrink-0">
                   サンプルExcel
@@ -778,88 +818,10 @@
     <!-- 画面3：進行表・コート運営（OOP / リアルタイム進行ボード）            -->
     <!-- =================================================================== -->
     <div id="view-oop" class="hidden flex-1 flex flex-col overflow-hidden bg-slate-100">
-      <!-- 上段ツールバー -->
-      <div class="no-print bg-white border-b border-slate-200 px-3 sm:px-4 py-2 shrink-0 space-y-2">
+      <!-- 上段ツールバー（整理版：主要操作＋⚙設定メニュー＋出力メニュー） -->
+      <div class="no-print bg-white border-b border-slate-200 px-3 sm:px-4 py-2 shrink-0 space-y-1.5">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <div class="flex flex-wrap items-center gap-2">
-            <div class="flex items-center gap-1.5 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
-              <label class="text-[11px] font-bold text-slate-500">会場</label>
-              <input type="text" id="oop-venue-input" value="第1会場" oninput="updateOopVenue(this.value)"
-                     class="w-28 text-xs font-bold text-slate-800 bg-transparent focus:outline-none border-b border-transparent focus:border-blue-500" />
-            </div>
-
-            <div class="flex items-center gap-1.5 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
-              <label class="text-[11px] font-bold text-slate-500">コート数</label>
-              <select id="oop-court-count-select" onchange="changeOopCourtCount(this.value)"
-                      class="text-xs font-bold text-slate-800 bg-white border border-slate-300 rounded px-1.5 py-0.5">
-                <option value="2">2面</option>
-                <option value="3">3面</option>
-                <option value="4" selected>4面</option>
-                <option value="5">5面</option>
-                <option value="6">6面</option>
-                <option value="8">8面</option>
-                <option value="10">10面</option>
-                <option value="12">12面</option>
-                <option value="16">16面</option>
-              </select>
-            </div>
-
-            <div class="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
-              <button id="btn-oop-mode-block" onclick="setOopAssignMode('block')"
-                      class="px-2 py-1 text-[11px] font-bold rounded-md bg-white text-slate-900 shadow-sm transition"
-                      title="A〜D山ごとに担当コートを振り分けます">山・ブロック順</button>
-              <button id="btn-oop-mode-round" onclick="setOopAssignMode('round')"
-                      class="px-2 py-1 text-[11px] font-bold rounded-md text-slate-600 hover:text-slate-900 transition"
-                      title="1回戦から順に全コートへ均等配分します">ラウンド順</button>
-            </div>
-
-            <button onclick="regenerateOopSchedule(true)"
-                    class="px-2.5 py-1 text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white rounded-lg shadow-sm transition"
-                    title="試合中・終了済みの試合は維持したまま、待機試合を再配分します">
-              進行表を再配分
-            </button>
-
-            <button id="btn-oop-umpire-toggle" onclick="toggleOopUmpireRule()"
-                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 transition"
-                    title="前試合の敗者審判ルールを自動表示">
-              敗者審判: ON
-            </button>
-
-            <button id="btn-oop-hide-finished" onclick="toggleOopHideFinished()"
-                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 transition"
-                    title="終了済み試合をたたんで、試合中・次試合を左端に詰めて表示">
-              終了済をたたむ: OFF
-            </button>
-
-            <button id="btn-oop-undo" onclick="undoOopAction()" disabled
-                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
-                    title="直前のコート移動・再配分を元に戻します">
-              ↩ 戻す
-            </button>
-
-            <button id="btn-oop-add-blank" onclick="selectNewOopBlankForInsert()"
-                    draggable="true"
-                    ondragstart="handleOopDragStart(event, '__NEW_BLANK__')"
-                    ondragend="handleOopDragEnd(event)"
-                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 transition"
-                    title="クリックして複数の＋位置に連続挿入、またはそのままコートへドラッグできます">
-              ＋ 空き枠
-            </button>
-
-            <button onclick="alignOopQuarterfinals()"
-                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 transition"
-                    title="ベスト8（準々決勝）の開始列を全コートで揃えるため不足分の空き枠を自動挿入">
-              ベスト8揃え
-            </button>
-
-            <button id="btn-oop-announcement" onclick="openAnnouncementModal()"
-                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800 transition flex items-center gap-1"
-                    title="生徒・保護者向けの閲覧画面へリアルタイムのアナウンス（雨天中断など）を配信">
-              <span id="oop-announce-dot" class="hidden w-1.5 h-1.5 rounded-full bg-rose-600 live-dot"></span>
-              <span>📢 アナウンス</span>
-            </button>
-          </div>
-
+          <!-- 左側：表示切替 ＆ ⚙ 進行表設定ポップオーバー -->
           <div class="flex flex-wrap items-center gap-1.5">
             <div class="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
               <button id="btn-oop-view-board" onclick="setOopViewStyle('board')"
@@ -871,20 +833,130 @@
                       class="px-2.5 py-1 text-[11px] font-bold rounded-md text-slate-600 hover:text-slate-900 transition">印刷マトリクス</button>
             </div>
 
-            <div class="h-4 w-px bg-slate-200 mx-0.5"></div>
+            <!-- ⚙ 進行表設定ドロップダウン -->
+            <div class="relative">
+              <button id="btn-oop-settings-menu" onclick="toggleOopSettingsMenu()"
+                      class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-800 transition flex items-center gap-1.5">
+                <span>⚙ 設定</span>
+                <span id="oop-settings-summary" class="text-[10px] font-semibold text-slate-500">第1会場・4面</span>
+                <span class="text-[10px] text-slate-400">▾</span>
+              </button>
 
-            <button onclick="printOopSheet()"
-                    class="px-2.5 py-1 text-[11px] font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-md transition">
-              印刷
+              <div id="oop-settings-popover" class="hidden absolute left-0 top-full mt-1.5 w-80 bg-white text-slate-800 rounded-xl shadow-2xl border border-slate-200 p-3.5 z-50 space-y-3">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+                  <span class="text-xs font-extrabold text-slate-900">⚙ 進行表・コート設定</span>
+                  <button onclick="closeOopMenus()" class="text-xs text-slate-400 hover:text-slate-700 font-bold px-1">✕</button>
+                </div>
+
+                <div class="grid grid-cols-5 gap-2">
+                  <div class="col-span-3">
+                    <label class="block text-[10px] font-bold text-slate-500 mb-0.5">会場名</label>
+                    <input type="text" id="oop-venue-input" value="第1会場" oninput="updateOopVenue(this.value)"
+                           class="w-full px-2 py-1 text-xs font-bold text-slate-800 bg-slate-50 border border-slate-300 rounded-md focus:bg-white focus:outline-none focus:border-blue-500" />
+                  </div>
+                  <div class="col-span-2">
+                    <label class="block text-[10px] font-bold text-slate-500 mb-0.5">コート数</label>
+                    <select id="oop-court-count-select" onchange="changeOopCourtCount(this.value)"
+                            class="w-full text-xs font-bold text-slate-800 bg-white border border-slate-300 rounded-md px-1.5 py-1">
+                      <option value="2">2面</option>
+                      <option value="3">3面</option>
+                      <option value="4" selected>4面</option>
+                      <option value="5">5面</option>
+                      <option value="6">6面</option>
+                      <option value="8">8面</option>
+                      <option value="10">10面</option>
+                      <option value="12">12面</option>
+                      <option value="16">16面</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="space-y-1.5 pt-1 border-t border-slate-100">
+                  <div class="text-[10px] font-bold text-slate-500">自動配分ルール</div>
+                  <div class="grid grid-cols-2 bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
+                    <button id="btn-oop-mode-block" onclick="setOopAssignMode('block')"
+                            class="px-2 py-1 text-[11px] font-bold rounded-md bg-white text-slate-900 shadow-sm transition"
+                            title="A〜D山ごとに担当コートを振り分けます">山・ブロック順</button>
+                    <button id="btn-oop-mode-round" onclick="setOopAssignMode('round')"
+                            class="px-2 py-1 text-[11px] font-bold rounded-md text-slate-600 hover:text-slate-900 transition"
+                            title="1回戦から順に全コートへ均等配分します">ラウンド順</button>
+                  </div>
+                  <button onclick="regenerateOopSchedule(true); closeOopMenus();"
+                          class="w-full py-1.5 text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white rounded-lg shadow-sm transition"
+                          title="試合中・終了済みの試合は維持したまま、待機試合を再配分します">
+                    待機試合を再配分する
+                  </button>
+                </div>
+
+                <div class="space-y-1.5 pt-1 border-t border-slate-100">
+                  <div class="text-[10px] font-bold text-slate-500">運営・表示オプション</div>
+                  <div class="grid grid-cols-2 gap-1.5">
+                    <button id="btn-oop-umpire-toggle" onclick="toggleOopUmpireRule()"
+                            class="px-2 py-1.5 text-[11px] font-bold rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 transition"
+                            title="前試合の敗者審判ルールを自動表示">
+                      敗者審判: ON
+                    </button>
+                    <button id="btn-oop-hide-finished" onclick="toggleOopHideFinished()"
+                            class="px-2 py-1.5 text-[11px] font-bold rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 transition"
+                            title="終了済み試合をたたんで、試合中・次試合を左端に詰めて表示">
+                      終了済をたたむ: OFF
+                    </button>
+                  </div>
+                  <button onclick="alignOopQuarterfinals(); closeOopMenus();"
+                          class="w-full py-1.5 text-[11px] font-bold rounded-lg border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 transition"
+                          title="ベスト8（準々決勝）の開始列を全コートで揃えるため不足分の空き枠を自動挿入">
+                    ベスト8開始列を全コートで揃える
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 右側：当日よく使う操作（空き枠・戻す・アナウンス・出力▾） -->
+          <div class="flex flex-wrap items-center gap-1.5">
+            <button id="btn-oop-add-blank" onclick="selectNewOopBlankForInsert()"
+                    draggable="true"
+                    ondragstart="handleOopDragStart(event, '__NEW_BLANK__')"
+                    ondragend="handleOopDragEnd(event)"
+                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 transition"
+                    title="クリックして複数の＋位置に連続挿入、またはそのままコートへドラッグできます">
+              ＋ 空き枠
             </button>
-            <button onclick="exportOopPdf()"
-                    class="px-2.5 py-1 text-[11px] font-bold bg-rose-600 hover:bg-rose-500 text-white rounded-md transition">
-              PDF
+
+            <button id="btn-oop-undo" onclick="undoOopAction()" disabled
+                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                    title="直前のコート移動・再配分を元に戻します">
+              ↩ 戻す
             </button>
-            <button onclick="exportOopExcel()"
-                    class="px-2.5 py-1 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition">
-              Excel
+
+            <button id="btn-oop-announcement" onclick="openAnnouncementModal()"
+                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800 transition flex items-center gap-1"
+                    title="生徒・保護者向けの閲覧画面へリアルタイムのアナウンス（雨天中断など）を配信">
+              <span id="oop-announce-dot" class="hidden w-1.5 h-1.5 rounded-full bg-rose-600 live-dot"></span>
+              <span>📢 アナウンス</span>
             </button>
+
+            <div class="relative">
+              <button id="btn-oop-export-menu" onclick="toggleOopExportMenu()"
+                      class="px-2.5 py-1 text-[11px] font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-white transition flex items-center gap-1">
+                <span>出力</span>
+                <span class="text-[10px] opacity-80">▾</span>
+              </button>
+              <div id="oop-export-popover" class="hidden absolute right-0 top-full mt-1.5 w-48 bg-white text-slate-800 rounded-xl shadow-2xl border border-slate-200 p-1.5 z-50 space-y-1">
+                <button onclick="printOopSheet(); closeOopMenus();"
+                        class="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-slate-100 text-xs font-bold text-slate-800 transition">
+                  🖨 進行表を印刷
+                </button>
+                <button onclick="exportOopPdf(); closeOopMenus();"
+                        class="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-rose-50 text-xs font-bold text-rose-700 transition">
+                  📄 PDFで書き出し
+                </button>
+                <button onclick="exportOopExcel(); closeOopMenus();"
+                        class="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-emerald-50 text-xs font-bold text-emerald-700 transition">
+                  📊 Excelで書き出し
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -996,9 +1068,9 @@
         </div>
       </div>
 
-      <!-- ポータル本体コンテナ -->
-      <div class="flex-1 overflow-auto p-2 sm:p-5 flex justify-center items-start bg-slate-900/95">
-        <div id="spectator-portal-frame" class="w-full max-w-[400px] min-h-[720px] bg-slate-50 text-slate-900 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden flex flex-col">
+      <!-- ポータル本体コンテナ（画面高さを固定し内部のみスクロール） -->
+      <div class="flex-1 min-h-0 overflow-hidden p-2 sm:p-4 flex justify-center items-center bg-slate-900/95">
+        <div id="spectator-portal-frame" class="w-full max-w-[400px] h-full max-h-[820px] min-h-0 bg-slate-50 text-slate-900 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden flex flex-col">
           <!-- JS描画: 生徒・保護者向け3タブポータル -->
         </div>
       </div>

@@ -649,7 +649,11 @@ function switchMainView(view) {
   [homeView, regView, tourneyView, oopView, spectatorView].forEach((el) => {
     if (el) el.classList.add('hidden');
   });
-  if (tabHome) tabHome.className = (view === 'home') ? activeCls : idleCls;
+  if (tabHome) {
+    tabHome.className = (view === 'home')
+      ? 'flex items-center gap-2 px-1.5 py-1 rounded-lg border border-emerald-400/60 bg-slate-800 transition shrink-0 text-left'
+      : 'flex items-center gap-2 px-1.5 py-1 rounded-lg border border-transparent hover:bg-slate-800 transition shrink-0 text-left';
+  }
   if (tabReg) tabReg.className = (view === 'registration') ? activeCls : idleCls;
   if (tabTourney) tabTourney.className = (view === 'tournament') ? activeCls : idleCls;
   if (tabOop) tabOop.className = (view === 'oop') ? activeCls : idleCls;
@@ -784,12 +788,12 @@ function setPrintMode(mode) {
   const btnCheck = document.getElementById('btn-print-check');
   if (btnDist && btnCheck) {
     if (mode === 'distribution') {
-      btnDist.className = 'px-2 py-0.5 text-[11px] rounded font-bold bg-emerald-600 text-white transition';
-      btnCheck.className = 'px-2 py-0.5 text-[11px] rounded font-bold text-slate-300 hover:text-white transition';
+      btnDist.className = 'px-2 py-1 text-[11px] rounded-md font-bold bg-emerald-600 text-white shadow-sm transition';
+      btnCheck.className = 'px-2 py-1 text-[11px] rounded-md font-bold text-slate-600 hover:text-slate-900 transition';
       document.body.classList.add('print-hide-ranks');
     } else {
-      btnCheck.className = 'px-2 py-0.5 text-[11px] rounded font-bold bg-amber-500 text-slate-950 transition';
-      btnDist.className = 'px-2 py-0.5 text-[11px] rounded font-bold text-slate-300 hover:text-white transition';
+      btnCheck.className = 'px-2 py-1 text-[11px] rounded-md font-bold bg-amber-500 text-slate-950 shadow-sm transition';
+      btnDist.className = 'px-2 py-1 text-[11px] rounded-md font-bold text-slate-600 hover:text-slate-900 transition';
       document.body.classList.remove('print-hide-ranks');
     }
   }
@@ -804,25 +808,27 @@ function setPrintOrientation(orientation) {
   if (styleEl) styleEl.textContent = `@page { size: A4 ${orientation}; margin: 7mm; }`;
   if (btnP && btnL) {
     if (orientation === 'portrait') {
-      btnP.className = 'px-2 py-0.5 text-[11px] rounded font-bold bg-slate-600 text-white transition';
-      btnL.className = 'px-2 py-0.5 text-[11px] rounded font-bold text-slate-300 hover:text-white transition';
+      btnP.className = 'px-2 py-1 text-[11px] rounded-md font-bold bg-slate-800 text-white shadow-sm transition';
+      btnL.className = 'px-2 py-1 text-[11px] rounded-md font-bold text-slate-600 hover:text-slate-900 transition';
     } else {
-      btnL.className = 'px-2 py-0.5 text-[11px] rounded font-bold bg-slate-600 text-white transition';
-      btnP.className = 'px-2 py-0.5 text-[11px] rounded font-bold text-slate-300 hover:text-white transition';
+      btnL.className = 'px-2 py-1 text-[11px] rounded-md font-bold bg-slate-800 text-white shadow-sm transition';
+      btnP.className = 'px-2 py-1 text-[11px] rounded-md font-bold text-slate-600 hover:text-slate-900 transition';
     }
   }
   saveToLocalStorage();
 }
 
 function executePrint() {
+  closePrintSettingsMenu();
   if (state.mainView !== 'tournament') switchMainView('tournament');
   setTimeout(() => window.print(), 160);
 }
 
 // =========================================================================
-// 保存メニュー制御 ＆ JSON / Excel / PDF エクスポート・インポート
+// 保存メニュー制御 ＆ 印刷設定ポップオーバー ＆ JSON / Excel / PDF
 // =========================================================================
 function toggleExportMenu() {
+  closePrintSettingsMenu();
   const menu = document.getElementById('export-menu-popover');
   if (menu) menu.classList.toggle('hidden');
 }
@@ -832,12 +838,31 @@ function closeExportMenu() {
   if (menu) menu.classList.add('hidden');
 }
 
+function togglePrintSettingsMenu() {
+  closeExportMenu();
+  const menu = document.getElementById('print-settings-popover');
+  if (menu) menu.classList.toggle('hidden');
+}
+
+function closePrintSettingsMenu() {
+  const menu = document.getElementById('print-settings-popover');
+  if (menu) menu.classList.add('hidden');
+}
+
 document.addEventListener('click', (e) => {
-  const menu = document.getElementById('export-menu-popover');
-  const btn = document.getElementById('btn-export-menu');
-  if (!menu || menu.classList.contains('hidden')) return;
-  if (!menu.contains(e.target) && (!btn || !btn.contains(e.target))) {
-    menu.classList.add('hidden');
+  const expMenu = document.getElementById('export-menu-popover');
+  const expBtn = document.getElementById('btn-export-menu');
+  if (expMenu && !expMenu.classList.contains('hidden')) {
+    if (!expMenu.contains(e.target) && (!expBtn || !expBtn.contains(e.target))) {
+      expMenu.classList.add('hidden');
+    }
+  }
+  const prtMenu = document.getElementById('print-settings-popover');
+  const prtBtn = document.getElementById('btn-print-settings-menu');
+  if (prtMenu && !prtMenu.classList.contains('hidden')) {
+    if (!prtMenu.contains(e.target) && (!prtBtn || !prtBtn.contains(e.target))) {
+      prtMenu.classList.add('hidden');
+    }
   }
 });
 
@@ -1161,6 +1186,11 @@ function importJsonState(event) {
 // サンプルデータ・Excel/CSV・テキスト・個別追加
 // =========================================================================
 function loadRealisticSampleData(notify = true) {
+  if (notify && hasGeneratedBracket()) {
+    if (!confirm('すでにトーナメントが作成されています。\nサンプル15組を読み込むと、現在の登録選手とトーナメント配置が置き換わります。\n本当に実行しますか？')) {
+      return;
+    }
+  }
   const sample = [
     { schoolRank: 1, p1: '佐藤 翔太', p2: '鈴木 健太', school: '星見第二中学校', seed: 1 },
     { schoolRank: 2, p1: '高橋 翼',   p2: '田中 蓮',   school: '星見第二中学校', seed: null },
@@ -1608,6 +1638,7 @@ function renderPrecheckSummary() {
 
 function renderRegistrationTable() {
   renderPrecheckSummary();
+  updateRegBracketActionButtons();
   const tbody = document.getElementById('reg-table-body');
   const summary = document.getElementById('reg-table-summary');
   const seedSummary = document.getElementById('reg-seed-summary');
@@ -1763,7 +1794,45 @@ function generateDummySchoolNames(schoolCount) {
   return names;
 }
 
+function hasGeneratedBracket() {
+  return Array.isArray(state.slots) && state.slots.some(Boolean);
+}
+
+function hasRecordedMatchProgress() {
+  const hasResults = state.results && Object.keys(state.results).length > 0;
+  const hasOopStatuses = Boolean(
+    state.oop &&
+    state.oop.statuses &&
+    Object.values(state.oop.statuses).some((st) => st && st !== 'waiting')
+  );
+  return hasResults || hasOopStatuses;
+}
+
+function updateRegBracketActionButtons() {
+  const openBtn = document.getElementById('btn-open-existing-bracket');
+  const genBtn = document.getElementById('btn-generate-bracket-main');
+  const genLbl = document.getElementById('btn-generate-bracket-label');
+  if (!genBtn || !genLbl) return;
+
+  if (hasGeneratedBracket()) {
+    if (openBtn) openBtn.classList.remove('hidden');
+    genBtn.className = 'px-3.5 py-2 bg-white hover:bg-amber-50 text-amber-900 border border-amber-300 text-xs font-bold rounded-lg transition flex items-center gap-1.5';
+    genBtn.title = 'すでにトーナメントが作成されています（押すと確認ダイアログが表示されます）';
+    genLbl.textContent = '🔒 再抽選して作り直す';
+  } else {
+    if (openBtn) openBtn.classList.add('hidden');
+    genBtn.className = 'px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold rounded-lg shadow-sm transition flex items-center gap-2';
+    genBtn.title = '登録済み選手からトーナメントを自動生成して開きます';
+    genLbl.textContent = 'トーナメント自動生成して開く';
+  }
+}
+
 function buildDummyFrame(recordHistory = true) {
+  if (recordHistory && hasGeneratedBracket()) {
+    if (!confirm('すでにトーナメントが作成されています。\n仮組を生成すると、現在の選手登録とトーナメント配置・スコアは上書きされます。\n本当に仮組を作成しますか？')) {
+      return;
+    }
+  }
   const count = Math.max(2, Math.min(256, parseInt(document.getElementById('entry-count-input').value, 10) || 15));
   const rawSchools = parseInt(document.getElementById('dummy-school-count-input')?.value, 10) || 6;
   const schoolCount = Math.max(1, Math.min(64, Math.min(count, rawSchools)));
@@ -1797,8 +1866,14 @@ function buildDummyFrame(recordHistory = true) {
 
 function generateAndOpenTournament() {
   if (state.entries.length < 2) {
-    alert('2ペア以上の生徒を登録してからトーナメントを作成してください（「サンプル15組読込」もご利用いただけます）。');
+    alert('2ペア以上の生徒を登録してからトーナメントを作成してください（「サンプル15組」もご利用いただけます）。');
     return;
+  }
+  if (hasGeneratedBracket()) {
+    const warnMsg = hasRecordedMatchProgress()
+      ? 'すでにトーナメントが作成されており、試合結果や進行状況が記録されています。\n\n再抽選すると現在の配置・手動調整・試合スコア・進行状況はすべてリセットされます。\n本当にトーナメントを作り直しますか？'
+      : 'すでにトーナメントが作成されています。\n\n再抽選すると現在の配置や手動の入れ替え・塗りつぶしは上書きされます。\n（作成済みの表を見るだけの場合は「キャンセル」を押し、「作成済みトーナメントを開く」をご利用ください）\n\n本当に再抽選して作り直しますか？';
+    if (!confirm(warnMsg)) return;
   }
   generateTournamentFromEntries(true, true);
   switchMainView('tournament');
@@ -1841,6 +1916,7 @@ function generateTournamentFromEntries(recordHistory = true, notifyUser = false)
   }
 
   refreshAlerts(notifyUser);
+  updateRegBracketActionButtons();
   saveToLocalStorage();
 }
 
@@ -2429,8 +2505,8 @@ function togglePrintFills(forceVal, notify = true) {
   if (btn && stEl) {
     stEl.textContent = state.printShowFills ? 'ON' : 'OFF';
     btn.className = state.printShowFills
-      ? 'hidden md:inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-md font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/50 transition'
-      : 'hidden md:inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-md font-bold bg-slate-800 hover:bg-slate-700 text-slate-400 border border-slate-700 transition';
+      ? 'inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded-md font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition'
+      : 'inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded-md font-bold bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300 transition';
   }
   saveToLocalStorage();
   if (notify) {
