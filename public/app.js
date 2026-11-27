@@ -110,6 +110,7 @@ const state = {
   oop: (typeof OopEngine !== 'undefined') ? OopEngine.createDefaultOopState() : null,
   appMode: 'edit',          // 'edit' | 'paint' | 'match'
   layoutMode: 'dual',       // 'dual' | 'single'
+  bracketBlockFilter: 'ALL', // 'ALL' | 'A' | 'B' | 'C' | 'D'
   printMode: 'distribution',
   printOrientation: 'portrait',
   showRankBadge: true,
@@ -611,30 +612,33 @@ function switchRegSubTab(tab) {
 
 function switchMainView(view) {
   state.mainView = view;
+  const homeView = document.getElementById('view-home');
   const regView = document.getElementById('view-registration');
   const tourneyView = document.getElementById('view-tournament');
   const oopView = document.getElementById('view-oop');
   const spectatorView = document.getElementById('view-spectator');
   const eventBar = document.getElementById('event-switcher-bar');
 
+  const tabHome = document.getElementById('main-tab-home');
   const tabReg = document.getElementById('main-tab-reg');
   const tabTourney = document.getElementById('main-tab-tourney');
   const tabOop = document.getElementById('main-tab-oop');
   const tabSpectator = document.getElementById('main-tab-spectator');
 
-  const activeCls = 'px-2.5 py-1 text-xs font-bold rounded-md bg-blue-600 text-white shadow transition flex items-center gap-1';
-  const idleCls = 'px-2.5 py-1 text-xs font-bold rounded-md text-slate-300 hover:text-white transition flex items-center gap-1';
-  const activeSpecCls = 'px-2.5 py-1 text-xs font-bold rounded-md bg-emerald-600 text-white shadow transition flex items-center gap-1';
-  const idleSpecCls = 'px-2.5 py-1 text-xs font-bold rounded-md text-emerald-300 hover:text-white transition flex items-center gap-1';
+  const activeCls = 'px-2 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold rounded-md bg-blue-600 text-white shadow transition flex items-center gap-1 whitespace-nowrap';
+  const idleCls = 'px-2 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold rounded-md text-slate-300 hover:text-white transition flex items-center gap-1 whitespace-nowrap';
+  const activeSpecCls = 'px-2 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold rounded-md bg-emerald-600 text-white shadow transition flex items-center gap-1 whitespace-nowrap';
+  const idleSpecCls = 'px-2 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold rounded-md text-emerald-300 hover:text-white transition flex items-center gap-1 whitespace-nowrap';
 
-  [regView, tourneyView, oopView, spectatorView].forEach((el) => {
+  [homeView, regView, tourneyView, oopView, spectatorView].forEach((el) => {
     if (el) el.classList.add('hidden');
   });
+  if (tabHome) tabHome.className = (view === 'home') ? activeCls : idleCls;
   if (tabReg) tabReg.className = (view === 'registration') ? activeCls : idleCls;
   if (tabTourney) tabTourney.className = (view === 'tournament') ? activeCls : idleCls;
   if (tabOop) tabOop.className = (view === 'oop') ? activeCls : idleCls;
   if (tabSpectator) tabSpectator.className = (view === 'spectator') ? activeSpecCls : idleSpecCls;
-  if (eventBar) eventBar.classList.toggle('hidden', view === 'spectator');
+  if (eventBar) eventBar.classList.toggle('hidden', view === 'spectator' || view === 'home');
 
   const ensureBracketReady = () => {
     if (state.slots.length === 0) {
@@ -647,7 +651,10 @@ function switchMainView(view) {
     }
   };
 
-  if (view === 'registration') {
+  if (view === 'home') {
+    if (homeView) homeView.classList.remove('hidden');
+    if (typeof window.onEnterHomeView === 'function') window.onEnterHomeView();
+  } else if (view === 'registration') {
     if (regView) regView.classList.remove('hidden');
     renderSchoolAliasEditor();
     renderRegistrationTable();
@@ -2173,12 +2180,14 @@ function renderTourneySidebar() {
   }).join('');
 }
 
-function jumpToSlot(slotIdx) {
+function jumpToSlot(slotIdx, temporaryFlash = true) {
   const el = document.querySelector(`[data-slot-idx="${slotIdx}"]`);
   if (el) {
     el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-    el.classList.add('search-current-slot');
-    setTimeout(() => el.classList.remove('search-current-slot'), 1800);
+    if (temporaryFlash) {
+      el.classList.add('jump-flash-slot');
+      setTimeout(() => el.classList.remove('jump-flash-slot'), 1800);
+    }
   }
 }
 
@@ -2201,7 +2210,7 @@ function handleBoardSearch(q) {
   const countEl = document.getElementById('board-search-count');
   if (countEl) countEl.textContent = state.searchQuery ? `${state.searchMatches.length}件` : '';
   renderSheet();
-  if (state.searchMatches.length > 0) jumpToSlot(state.searchMatches[0]);
+  if (state.searchMatches.length > 0) jumpToSlot(state.searchMatches[0], false);
 }
 
 function handleBoardSearchKey(e) {
@@ -2215,7 +2224,7 @@ function stepBoardSearch(delta) {
   if (state.searchMatches.length === 0) return;
   state.searchCursor = (state.searchCursor + delta + state.searchMatches.length) % state.searchMatches.length;
   renderSheet();
-  jumpToSlot(state.searchMatches[state.searchCursor]);
+  jumpToSlot(state.searchMatches[state.searchCursor], false);
 }
 
 function changeZoom(delta) {
@@ -2569,13 +2578,185 @@ function renderSheet() {
     : (showRankBadge ? 292 : 254);
   const stepWidth = Math.max(28, Math.min(48, Math.floor(210 / Math.max(1, totalRounds - 1))));
 
-  if (state.layoutMode === 'dual' && size >= 4) {
+  if (state.bracketBlockFilter && state.bracketBlockFilter !== 'ALL' && size >= 8) {
+    renderSingleBlockBracket(sheet, tree, size, totalRounds, rowHeight, labelWidth, stepWidth, showRankBadge, alertSets, state.bracketBlockFilter);
+  } else if (state.layoutMode === 'dual' && size >= 4) {
     renderDualWingBracket(sheet, tree, size, totalRounds, rowHeight, labelWidth, stepWidth, showRankBadge, alertSets);
   } else {
     renderSingleSideBracket(sheet, tree, size, totalRounds, rowHeight, labelWidth, stepWidth, showRankBadge, alertSets);
   }
   autoFitSlotTexts(sheet);
   applyZoomTransform();
+}
+
+function setBracketBlockFilter(code) {
+  state.bracketBlockFilter = ['A', 'B', 'C', 'D'].includes(code) ? code : 'ALL';
+  ['ALL', 'A', 'B', 'C', 'D'].forEach((k) => {
+    const btn = document.getElementById(`btn-block-filter-${k}`);
+    if (!btn) return;
+    btn.className = state.bracketBlockFilter === k
+      ? 'px-2 py-0.5 text-[11px] font-bold rounded bg-slate-900 text-white shadow-sm transition'
+      : 'px-2 py-0.5 text-[11px] font-bold rounded text-slate-600 hover:text-slate-900 transition';
+  });
+  renderSheet();
+}
+
+function renderSingleBlockBracket(sheet, tree, size, totalRounds, rowHeight, labelWidth, stepW, showRankBadge, alertSets, blockCode) {
+  const quarterIndexMap = { A: 0, D: 1, C: 2, B: 3 };
+  const qIdx = quarterIndexMap[blockCode] ?? 0;
+  const quarterSize = size / 4;
+  const startSlot = qIdx * quarterSize;
+  const endSlot = startSlot + quarterSize;
+  const blockRounds = Math.max(1, totalRounds - 2);
+  const priorityMap = BracketEngine.buildAdjustedSlotPriorityMap(state.activeSlotMask, size);
+
+  const activeIndices = [];
+  for (let i = startSlot; i < endSlot; i++) {
+    if (state.activeSlotMask[i]) activeIndices.push(i);
+  }
+  const slotToDisplayNum = {};
+  let dispCounter = 1;
+  for (let i = 0; i < size; i++) {
+    if (state.activeSlotMask[i]) slotToDisplayNum[i] = dispCounter++;
+  }
+
+  const nodeY = {};
+  nodeY[0] = {};
+  activeIndices.forEach((slotIdx, visualRow) => {
+    nodeY[0][slotIdx] = visualRow * rowHeight + rowHeight / 2 + 12;
+  });
+  for (let r = 1; r <= blockRounds; r++) {
+    nodeY[r] = {};
+    const mStart = startSlot / Math.pow(2, r);
+    const mEnd = endSlot / Math.pow(2, r);
+    for (let m = mStart; m < mEnd; m++) {
+      const node = tree[r][m];
+      const y0 = nodeY[r - 1][m * 2];
+      const y1 = nodeY[r - 1][m * 2 + 1];
+      if (!node.active) nodeY[r][m] = 0;
+      else if (node.isBye) nodeY[r][m] = node.c0.active ? y0 : y1;
+      else nodeY[r][m] = (y0 + y1) / 2;
+    }
+  }
+
+  const totalWidth = labelWidth + blockRounds * stepW + 170;
+  const canvasHeight = Math.max(180, activeIndices.length * rowHeight + 28);
+  let svgBlackLines = '';
+  let svgRedLines = '';
+  let svgScoreTexts = '';
+  let htmlLabels = '';
+
+  const pushSvgLine = (x1, y1, x2, y2, isRed, width) => {
+    const line = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${isRed ? '#dc2626' : '#0f172a'}" stroke-width="${width || (isRed ? 2.6 : 1.4)}" stroke-linecap="square" />`;
+    if (isRed) svgRedLines += line;
+    else svgBlackLines += line;
+  };
+
+  activeIndices.forEach((slotIdx) => {
+    const leaf = tree[0][slotIdx];
+    const y = nodeY[0][slotIdx];
+    const isSel = state.selectedTarget && state.selectedTarget.type === 'slot' && state.selectedTarget.index === slotIdx;
+    const isSearchHit = state.searchMatches.includes(slotIdx);
+    const isSearchCurr = state.searchMatches.length > 0 && state.searchMatches[state.searchCursor] === slotIdx;
+    const stateCls = getSlotAlertClass(slotIdx, isSel, isSearchCurr, isSearchHit, alertSets, Boolean(leaf.entry));
+    const entry = leaf.entry;
+    const pRank = priorityMap[slotIdx];
+    const pBadge = (state.showSlotPriority && pRank)
+      ? `<span class="priority-rank-el text-[9px] font-bold px-1 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0">${pRank}</span>`
+      : '';
+    const sBadge = (state.showSlotPriority && entry && entry.seed)
+      ? `<span class="priority-rank-el text-[9px] font-bold px-1 py-0.2 rounded bg-amber-400 text-slate-950 shrink-0">S${entry.seed}</span>`
+      : '';
+    const rBadge = (showRankBadge && entry)
+      ? `<span class="rank-badge-el text-[9px] font-bold px-1 py-0.2 rounded bg-teal-50 text-teal-800 border border-teal-200 shrink-0">${escapeHtml(formatSchoolRankBadge(entry))}</span>`
+      : '';
+
+    const pairHtml = entry
+      ? `<span class="pair-name-wrap flex-1 min-w-0 text-left pr-1"><span class="pair-name-autofit block whitespace-nowrap leading-snug text-xs font-bold text-slate-900">${escapeHtml(entry.p1)}${entry.p2 ? '・' + escapeHtml(entry.p2) : ''}</span></span>
+         <span class="text-[11px] font-semibold text-slate-600 shrink-0">（${escapeHtml(formatSchoolShortName(entry.school))}）</span>`
+      : `<span class="flex-1 text-left text-[11px] text-slate-400 italic">空き枠</span>`;
+
+    htmlLabels += `<div data-slot-idx="${slotIdx}"
+                        onclick="handleTargetClick('slot', ${slotIdx})"
+                        draggable="${state.appMode === 'edit' && Boolean(entry)}"
+                        ondragstart="handleDragStart(event, 'slot', ${slotIdx})"
+                        ondragover="handleDragOver(event)"
+                        ondragleave="handleDragLeave(event)"
+                        ondrop="handleDrop(event, 'slot', ${slotIdx})"
+                        style="left:0; top:${y - 13}px; width:${labelWidth - 4}px; height:26px;"
+                        class="slot-card ${stateCls} absolute flex items-center gap-1 px-1 cursor-pointer">
+      ${pBadge}${sBadge}${rBadge}
+      <span class="w-6 text-right text-[11px] font-bold text-slate-500 shrink-0">${slotToDisplayNum[slotIdx]}</span>
+      ${pairHtml}
+    </div>`;
+  });
+
+  for (let r = 1; r <= blockRounds; r++) {
+    const xCurr = labelWidth + r * stepW;
+    const mStart = startSlot / Math.pow(2, r);
+    const mEnd = endSlot / Math.pow(2, r);
+    for (let m = mStart; m < mEnd; m++) {
+      const node = tree[r][m];
+      if (!node.active || node.isBye) continue;
+      const y0 = nodeY[r - 1][m * 2];
+      const y1 = nodeY[r - 1][m * 2 + 1];
+      const yMid = nodeY[r][m];
+      const xPrev0 = getEffectiveStartX(tree[r - 1][m * 2], r - 1, labelWidth, 1, stepW);
+      const xPrev1 = getEffectiveStartX(tree[r - 1][m * 2 + 1], r - 1, labelWidth, 1, stepW);
+      const res = node.result;
+      const win0 = Boolean(res && res.winner === 0);
+      const win1 = Boolean(res && res.winner === 1);
+      const reach0 = win0 || hasReachedByWin(node.c0);
+      const reach1 = win1 || hasReachedByWin(node.c1);
+
+      pushSvgLine(xPrev0, y0, xCurr, y0, reach0);
+      pushSvgLine(xCurr, y0, xCurr, yMid, win0);
+      pushSvgLine(xPrev1, y1, xCurr, y1, reach1);
+      pushSvgLine(xCurr, yMid, xCurr, y1, win1);
+
+      if (res) {
+        svgScoreTexts += `<text x="${xCurr - 9}" y="${y0 - 4}" text-anchor="middle" fill="#dc2626" font-size="11" font-weight="bold">${escapeHtml(res.g1)}</text>`;
+        svgScoreTexts += `<text x="${xCurr - 9}" y="${y1 + 12}" text-anchor="middle" fill="#dc2626" font-size="11" font-weight="bold">${escapeHtml(res.g2)}</text>`;
+      }
+      if (state.appMode === 'match' && node.c0.entry && node.c1.entry) {
+        const n0 = formatPairLabel(node.c0.entry, true);
+        const n1 = formatPairLabel(node.c1.entry, true);
+        htmlLabels += `<button onclick="openScoreModal('${r}_${m}', '${escapeJs(n0)}', '${escapeJs(n1)}', false)"
+                               style="left:${xCurr - 10}px; top:${yMid - 10}px; width:20px; height:20px;"
+                               class="no-print absolute rounded-full bg-rose-600 text-white text-[10px] font-bold shadow flex items-center justify-center z-10">✎</button>`;
+      }
+    }
+  }
+
+  const blockFinalM = startSlot / Math.pow(2, blockRounds);
+  const blockFinalNode = tree[blockRounds][blockFinalM];
+  const finalX = labelWidth + blockRounds * stepW;
+  const finalY = nodeY[blockRounds][blockFinalM];
+  if (blockFinalNode && blockFinalNode.active) {
+    const won = Boolean(blockFinalNode.result || blockFinalNode.isBye);
+    pushSvgLine(finalX, finalY, finalX + 24, finalY, Boolean(blockFinalNode.result), blockFinalNode.result ? 2.6 : 1.4);
+    if (won && blockFinalNode.entry) {
+      htmlLabels += `<div style="left:${finalX + 28}px; top:${finalY - 12}px;" class="absolute text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded whitespace-nowrap">${blockCode}ブロック勝者: ${escapeHtml(formatPairLabel(blockFinalNode.entry, true))}</div>`;
+    }
+  }
+
+  sheet.style.width = `${totalWidth + 48}px`;
+  sheet.innerHTML = `
+    <div class="mb-3 pb-2.5 border-b-2 border-slate-800 flex items-baseline justify-between gap-4">
+      <div class="flex items-center gap-2">
+        <span class="px-2 py-0.5 rounded bg-slate-900 text-white text-xs font-extrabold">${blockCode}ブロック</span>
+        <h2 class="text-lg font-bold tracking-wide text-slate-900">${escapeHtml(state.title)}</h2>
+      </div>
+      <div class="flex items-center gap-3 text-xs text-slate-600 font-semibold shrink-0">
+        <span>${state.matchFormat}ゲームマッチ</span>
+        <span>${blockCode}山：${activeIndices.length}ペア</span>
+      </div>
+    </div>
+    <div class="relative" style="width:${totalWidth}px; height:${canvasHeight}px;">
+      <svg width="${totalWidth}" height="${canvasHeight}" class="absolute inset-0 pointer-events-none">${svgBlackLines}${svgRedLines}${svgScoreTexts}</svg>
+      ${htmlLabels}
+    </div>
+  `;
 }
 
 /**

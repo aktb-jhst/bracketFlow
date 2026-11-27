@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="robots" content="noindex, nofollow" />
   <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <script>
+    (function () {
+      var s = new URLSearchParams(window.location.search || '');
+      var h = window.location.hash || '';
+      if (s.get('public') || h.indexOf('#public?') === 0) {
+        document.documentElement.classList.add('standalone-public-boot');
+      } else if ((s.get('staff') && s.get('e')) || h.indexOf('#staff?') === 0) {
+        document.documentElement.classList.add('standalone-staff-boot');
+      }
+    })();
+  </script>
   <title>BracketFlow — トーナメント作成・運営</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -23,7 +34,7 @@
   <header class="no-print bg-slate-900 text-white px-2.5 sm:px-4 min-h-[48px] py-1 flex flex-wrap items-center justify-between gap-2 shadow-md z-30 shrink-0">
     <!-- 左側：ロゴ＆画面切替 -->
     <div class="flex items-center gap-2 min-w-0 overflow-x-auto">
-      <div class="flex items-center gap-2 shrink-0">
+      <button type="button" onclick="switchMainView('home')" class="flex items-center gap-2 shrink-0 text-left hover:opacity-90 transition" title="大会ホームへ戻る">
         <span class="w-7 h-7 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-600 text-slate-950 flex items-center justify-center shadow-sm" aria-hidden="true">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 6h5v5H4" />
@@ -36,10 +47,14 @@
           <h1 class="text-sm font-bold tracking-tight text-white">BracketFlow</h1>
           <div class="text-[9px] text-slate-400 font-medium tracking-wider">TOURNAMENT STUDIO</div>
         </div>
-      </div>
+      </button>
 
       <!-- メイン画面タブ -->
       <nav class="flex items-center bg-slate-800/90 p-0.5 rounded-lg border border-slate-700/80 shrink-0">
+        <button id="main-tab-home" onclick="switchMainView('home')"
+                class="px-2 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold rounded-md text-slate-300 hover:text-white transition flex items-center gap-1 whitespace-nowrap">
+          <span>ホーム</span>
+        </button>
         <button id="main-tab-reg" onclick="switchMainView('registration')"
                 class="px-2 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold rounded-md bg-blue-600 text-white shadow transition flex items-center gap-1 whitespace-nowrap">
           <span>1. 名簿</span>
@@ -215,6 +230,15 @@
 
   <!-- メインコンテナ -->
   <div id="app-shell" class="flex-1 flex overflow-hidden relative">
+
+    <!-- =================================================================== -->
+    <!-- 画面0：大会ホーム（軽量ダッシュボード・マイ大会・クイック再開）        -->
+    <!-- =================================================================== -->
+    <div id="view-home" class="hidden flex-1 overflow-y-auto bg-slate-100 p-4 sm:p-6">
+      <div id="home-dashboard-root" class="max-w-5xl mx-auto space-y-4">
+        <!-- JS描画 -->
+      </div>
+    </div>
 
     <!-- =================================================================== -->
     <!-- 画面1：生徒登録・名簿・抽選ルール・学校略称設定画面                  -->
@@ -630,6 +654,17 @@
               <button id="btn-layout-dual" onclick="setLayoutMode('dual')" class="px-2 py-0.2 rounded font-bold bg-white text-slate-900 shadow-sm">左右中央</button>
               <button id="btn-layout-single" onclick="setLayoutMode('single')" class="px-2 py-0.2 rounded font-bold text-slate-600">片側縦型</button>
             </div>
+
+            <div class="h-3.5 w-px bg-slate-300 mx-0.5"></div>
+
+            <!-- A〜D ブロック分割表示 -->
+            <div class="flex items-center bg-slate-200/80 p-0.5 rounded-md text-[11px] gap-0.5" title="A〜Dブロックごとに分けて表示">
+              <button id="btn-block-filter-ALL" onclick="setBracketBlockFilter('ALL')" class="px-2 py-0.5 text-[11px] font-bold rounded bg-slate-900 text-white shadow-sm transition">全体</button>
+              <button id="btn-block-filter-A" onclick="setBracketBlockFilter('A')" class="px-2 py-0.5 text-[11px] font-bold rounded text-slate-600 hover:text-slate-900 transition">A</button>
+              <button id="btn-block-filter-B" onclick="setBracketBlockFilter('B')" class="px-2 py-0.5 text-[11px] font-bold rounded text-slate-600 hover:text-slate-900 transition">B</button>
+              <button id="btn-block-filter-C" onclick="setBracketBlockFilter('C')" class="px-2 py-0.5 text-[11px] font-bold rounded text-slate-600 hover:text-slate-900 transition">C</button>
+              <button id="btn-block-filter-D" onclick="setBracketBlockFilter('D')" class="px-2 py-0.5 text-[11px] font-bold rounded text-slate-600 hover:text-slate-900 transition">D</button>
+            </div>
           </div>
 
           <!-- 右：盤面検索 ＆ ズーム -->
@@ -799,36 +834,58 @@
             <button id="btn-oop-undo" onclick="undoOopAction()" disabled
                     class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
                     title="直前のコート移動・再配分を元に戻します">
-              ↩ 移動を戻す
+              ↩ 戻す
+            </button>
+
+            <button id="btn-oop-add-blank" onclick="selectNewOopBlankForInsert()"
+                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 transition"
+                    title="進行を揃えるための意図的な空き枠（進行調整枠）を任意の位置へ挿入">
+              ＋ 空き枠
+            </button>
+
+            <button onclick="alignOopQuarterfinals()"
+                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 transition"
+                    title="ベスト8（準々決勝）の開始列を全コートで揃えるため不足分の空き枠を自動挿入">
+              ベスト8揃え
+            </button>
+
+            <button id="btn-oop-announcement" onclick="openAnnouncementModal()"
+                    class="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800 transition flex items-center gap-1"
+                    title="生徒・保護者向けの閲覧画面へリアルタイムのアナウンス（雨天中断など）を配信">
+              <span id="oop-announce-dot" class="hidden w-1.5 h-1.5 rounded-full bg-rose-600 live-dot"></span>
+              <span>📢 アナウンス</span>
             </button>
           </div>
 
           <div class="flex flex-wrap items-center gap-1.5">
             <div class="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
               <button id="btn-oop-view-board" onclick="setOopViewStyle('board')"
-                      class="px-2.5 py-1 text-[11px] font-bold rounded-md bg-slate-900 text-white shadow-sm transition">全コート進行一覧</button>
+                      class="px-2.5 py-1 text-[11px] font-bold rounded-md bg-slate-900 text-white shadow-sm transition">全コート一覧</button>
+              <button id="btn-oop-view-split" onclick="setOopViewStyle('split')"
+                      class="px-2.5 py-1 text-[11px] font-bold rounded-md text-slate-600 hover:text-slate-900 transition"
+                      title="左：トーナメントT字ドラッグ ／ 右：進行表作成の2分割モード">2分割作成</button>
               <button id="btn-oop-view-table" onclick="setOopViewStyle('table')"
-                      class="px-2.5 py-1 text-[11px] font-bold rounded-md text-slate-600 hover:text-slate-900 transition">印刷用マトリクス</button>
+                      class="px-2.5 py-1 text-[11px] font-bold rounded-md text-slate-600 hover:text-slate-900 transition">印刷マトリクス</button>
             </div>
 
             <div class="h-4 w-px bg-slate-200 mx-0.5"></div>
 
             <button onclick="printOopSheet()"
                     class="px-2.5 py-1 text-[11px] font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-md transition">
-              進行表印刷
+              印刷
             </button>
             <button onclick="exportOopPdf()"
                     class="px-2.5 py-1 text-[11px] font-bold bg-rose-600 hover:bg-rose-500 text-white rounded-md transition">
-              PDF保存
+              PDF
             </button>
             <button onclick="exportOopExcel()"
                     class="px-2.5 py-1 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition">
-              Excel保存
+              Excel
             </button>
           </div>
         </div>
 
-        <!-- リアルタイム進捗サマリーバー -->
+        <!-- リアルタイム進捗サマリーバー ＆ 時系列矛盾ドロワー -->
         <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1 border-t border-slate-100">
           <div id="oop-stats-bar" class="flex flex-wrap items-center gap-2"></div>
           <div class="flex items-center gap-2 text-slate-500">
@@ -840,14 +897,41 @@
             </button>
             <button id="btn-oop-cancel-move" onclick="cancelOopMoveSelection()"
                     class="hidden px-2 py-0.5 bg-blue-600 text-white border border-blue-700 rounded font-bold shadow-sm">
-              移動選択を解除 (Esc)
+              選択を解除 (Esc)
             </button>
           </div>
         </div>
+        <div id="oop-conflicts-drawer" class="hidden p-2.5 rounded-lg bg-rose-50 border border-rose-300 text-[11px] space-y-1"></div>
       </div>
 
-      <!-- 全コート横タイムライン進行ボード作業領域 -->
+      <!-- 全コート横タイムライン進行ボード作業領域（2分割モード対応） -->
       <div id="oop-board-workspace" class="flex-1 flex overflow-hidden">
+        <!-- 左半分：2分割モード専用 トーナメント表（T字ドラッグハンドル） -->
+        <section id="oop-split-bracket-pane" class="no-print hidden w-[46%] min-w-[340px] max-w-[680px] bg-white border-r border-slate-300 flex flex-col shrink-0 overflow-hidden">
+          <div class="px-3 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-1.5 shrink-0">
+            <div class="flex items-center gap-1 flex-wrap">
+              <span class="text-[11px] font-extrabold text-slate-800 mr-1">ブロック:</span>
+              <button id="btn-oop-blk-ALL" onclick="setOopSplitBlock('ALL')" class="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-900 text-white">全体</button>
+              <button id="btn-oop-blk-A" onclick="setOopSplitBlock('A')" class="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-200 text-slate-700">A</button>
+              <button id="btn-oop-blk-B" onclick="setOopSplitBlock('B')" class="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-200 text-slate-700">B</button>
+              <button id="btn-oop-blk-C" onclick="setOopSplitBlock('C')" class="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-200 text-slate-700">C</button>
+              <button id="btn-oop-blk-D" onclick="setOopSplitBlock('D')" class="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-200 text-slate-700">D</button>
+              <button id="btn-oop-blk-FINALS" onclick="setOopSplitBlock('FINALS')" class="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-200 text-slate-700">準決・決勝</button>
+            </div>
+            <button onclick="clearAllOopAssignments()"
+                    class="px-2 py-0.5 text-[10px] font-bold rounded border border-slate-300 bg-white hover:bg-rose-50 hover:text-rose-700 text-slate-600 transition"
+                    title="進行表を空にして左のトーナメントから手動で1から組み立てる">
+              全て未配置にする
+            </button>
+          </div>
+          <div class="px-3 py-1 bg-blue-50/70 border-b border-blue-100 text-[10px] text-blue-900 font-semibold shrink-0">
+            T字の青アイコン（⠿ M1等）を右のコートへドラッグ、またはクリック→「＋」へ挿入
+          </div>
+          <div id="oop-split-bracket-scroll" class="flex-1 overflow-auto p-3 bg-white">
+            <!-- JS描画: T字ドラッグハンドル付きトーナメント -->
+          </div>
+        </section>
+
         <div id="oop-courts-grid" class="flex-1 overflow-auto p-2.5 sm:p-3 bg-slate-100">
           <!-- JS描画: 全コート横並びタイムライン一覧 -->
         </div>
@@ -885,7 +969,7 @@
     <!-- =================================================================== -->
     <div id="view-spectator" class="hidden flex-1 flex flex-col overflow-hidden bg-slate-900">
       <!-- プレビュー操作バー（管理者確認用） -->
-      <div class="no-print bg-slate-800 border-b border-slate-700 px-3 sm:px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-200 shrink-0">
+      <div id="spectator-preview-bar" class="no-print bg-slate-800 border-b border-slate-700 px-3 sm:px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-200 shrink-0">
         <div class="flex flex-wrap items-center gap-2">
           <span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 font-bold text-[11px]">生徒・保護者 公開ビュー（プレビュー）</span>
           <div class="flex items-center bg-slate-900 p-0.5 rounded-md border border-slate-700">
@@ -1108,6 +1192,78 @@
         <div class="flex gap-2">
           <button onclick="closeScoreModal()" class="px-3 py-1.5 text-xs border border-slate-300 rounded-lg text-slate-600 font-bold">キャンセル</button>
           <button onclick="saveMatchScore()" class="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg shadow">確定して反映</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 運営者アナウンス配信モーダル（生徒・保護者閲覧画面へ即時表示） -->
+  <div id="announcement-modal" class="no-print hidden fixed inset-0 bg-slate-900/60 backdrop-blur-[1px] z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-lg w-full p-5 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+        <div>
+          <h3 class="text-sm font-bold text-slate-900">📢 生徒・保護者向け リアルタイム・アナウンス</h3>
+          <p class="text-[11px] text-slate-500">公開ポータル最上部にリロード不要で即時表示されます</p>
+        </div>
+        <button onclick="closeAnnouncementModal()" class="text-slate-400 hover:text-slate-700 font-bold px-2 py-1">✕</button>
+      </div>
+
+      <div class="space-y-3">
+        <div id="announce-scope-row" class="grid grid-cols-2 gap-2">
+          <label class="flex items-center gap-1.5 p-2 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer text-xs font-bold">
+            <input type="radio" name="announce-scope" value="tournament" checked onchange="loadAnnouncementScopeDraft()" class="accent-blue-600" />
+            <span>大会全体（全種目）</span>
+          </label>
+          <label class="flex items-center gap-1.5 p-2 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer text-xs font-bold">
+            <input type="radio" name="announce-scope" value="event" onchange="loadAnnouncementScopeDraft()" class="accent-blue-600" />
+            <span>この種目（会場）のみ</span>
+          </label>
+        </div>
+
+        <div class="space-y-1">
+          <div class="text-[11px] font-bold text-slate-600">重要度（バナーの色）</div>
+          <div class="grid grid-cols-3 gap-2">
+            <label class="flex items-center justify-center gap-1.5 p-1.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-900 cursor-pointer text-xs font-bold">
+              <input type="radio" name="announce-level" value="info" class="accent-blue-600" />
+              <span>通常案内</span>
+            </label>
+            <label class="flex items-center justify-center gap-1.5 p-1.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-900 cursor-pointer text-xs font-bold">
+              <input type="radio" name="announce-level" value="warn" checked class="accent-amber-600" />
+              <span>注意・変更</span>
+            </label>
+            <label class="flex items-center justify-center gap-1.5 p-1.5 rounded-lg border border-rose-300 bg-rose-50 text-rose-900 cursor-pointer text-xs font-bold">
+              <input type="radio" name="announce-level" value="urgent" class="accent-rose-600" />
+              <span>緊急・中断</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="space-y-1">
+          <div class="text-[11px] font-bold text-slate-600">よく使う定型文（クリックで入力）</div>
+          <div class="flex flex-wrap gap-1.5">
+            <button type="button" onclick="applyAnnouncementPreset('urgent', '雨天のため試合を一時中断しています。再開時刻は決まり次第お知らせします。')"
+                    class="px-2 py-1 text-[10px] font-bold rounded bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200">雨天一時中断</button>
+            <button type="button" onclick="applyAnnouncementPreset('warn', 'コート整備のため10分ほど進行をお待ちください。')"
+                    class="px-2 py-1 text-[10px] font-bold rounded bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200">コート整備</button>
+            <button type="button" onclick="applyAnnouncementPreset('info', 'まもなく試合を再開します。次の試合の選手は担当コート付近に集合してください。')"
+                    class="px-2 py-1 text-[10px] font-bold rounded bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200">再開・集合</button>
+            <button type="button" onclick="applyAnnouncementPreset('info', '本日の全試合が終了しました。ご参加ありがとうございました。')"
+                    class="px-2 py-1 text-[10px] font-bold rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200">全試合終了</button>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-[11px] font-bold text-slate-600 mb-1">アナウンス本文</label>
+          <textarea id="announce-text-input" rows="3" placeholder="例：雨天のため全コート一時中断しています。13:00に再開判断を行います。"
+                    class="w-full px-3 py-2 text-xs font-bold border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500"></textarea>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between pt-2 border-t border-slate-100">
+        <button onclick="clearAnnouncementFromModal()" class="px-3 py-1.5 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg">アナウンスを消す</button>
+        <div class="flex gap-2">
+          <button onclick="closeAnnouncementModal()" class="px-3 py-1.5 text-xs border border-slate-300 rounded-lg text-slate-600 font-bold">閉じる</button>
+          <button onclick="saveAnnouncementFromModal()" class="px-4 py-1.5 text-xs bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg shadow">配信して反映</button>
         </div>
       </div>
     </div>

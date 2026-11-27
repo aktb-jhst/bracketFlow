@@ -74,6 +74,53 @@ body {
   z-index: 6;
 }
 
+/* サイドバー一覧・アラートジャンプ時の一時点滅（検索ハイライトとは分離） */
+.jump-flash-slot {
+  outline: 3px solid #2563eb !important;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.25);
+  z-index: 7;
+}
+
+/* 公開QR / スタッフURL 直接起動時の0秒チラつき防止 */
+html.standalone-public-boot header,
+html.standalone-public-boot #event-switcher-bar,
+html.standalone-public-boot #view-home,
+html.standalone-public-boot #view-registration,
+html.standalone-public-boot #view-tournament,
+html.standalone-public-boot #view-oop,
+html.standalone-public-boot #spectator-preview-bar {
+  display: none !important;
+}
+html.standalone-public-boot #view-spectator {
+  display: flex !important;
+}
+html.standalone-staff-boot #view-home,
+html.standalone-staff-boot #view-registration,
+html.standalone-staff-boot #event-switcher-bar,
+html.standalone-staff-boot #main-tab-home,
+html.standalone-staff-boot #main-tab-reg,
+html.standalone-staff-boot #btn-open-publish-modal,
+html.standalone-staff-boot #btn-google-login {
+  display: none !important;
+}
+
+/* 2分割モードのT字ドラッグハンドル */
+.oop-t-handle {
+  cursor: grab;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.oop-t-handle:hover {
+  transform: translate(-50%, -50%) scale(1.1);
+  z-index: 25;
+}
+.oop-t-handle:active {
+  cursor: grabbing;
+}
+.oop-card-hover-link {
+  outline: 2.5px solid #f59e0b !important;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.28) !important;
+}
+
 /* 1回戦同校対決（赤） */
 .same-school-r1-alert {
   background-color: rgba(239, 68, 68, 0.14) !important;

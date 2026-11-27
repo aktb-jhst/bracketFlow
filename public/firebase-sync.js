@@ -16,7 +16,10 @@
     isPublicStandalone: false,
     publicTid: null,
     publicMeta: null,
+    publicMetaUnsub: null,
     publicEventUnsub: null,
+    publicCurrentEventId: null,
+    publicLastEventObj: null,
     adminLiveUnsub: null,
     adminLiveDocId: null,
     suppressRemoteEcho: false,
@@ -63,6 +66,9 @@
         }
         if (typeof window.refreshPublishCloudBanner === 'function') {
           window.refreshPublishCloudBanner();
+        }
+        if (typeof window.renderHomeView === 'function' && state.mainView === 'home') {
+          window.renderHomeView();
         }
       });
       return true;
@@ -251,6 +257,7 @@
         passcodeHash,
         hasPasscode: Boolean(pub.passcode),
         nameDisplayMode: pub.nameDisplayMode || 'full',
+        announcement: bundle.announcement || null,
         events: (bundle.events || []).map((ev) => ({
           id: ev.id,
           name: ev.name,
@@ -403,6 +410,9 @@
       rows.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
       cloud.myTournaments = rows;
       if (renderModal) renderMyTournamentsList();
+      if (typeof window.renderHomeView === 'function' && state.mainView === 'home') {
+        window.renderHomeView();
+      }
       return rows;
     } catch (err) {
       if (renderModal && listEl) {
@@ -530,23 +540,50 @@
     }
   }
 
+  async function duplicateCloudTournament(tid) {
+    if (!cloud.initialized || !cloud.user) return;
+    try {
+      const doc = await cloud.db.collection('tournaments').doc(tid).get();
+      if (!doc.exists) {
+        alert('複製元の大会データが見つかりません。');
+        return;
+      }
+      const parsed = JSON.parse(doc.data().bundleJson);
+      const newName = prompt('複製して作成する大会名を入力してください', `${parsed.name || '大会'}（コピー）`);
+      if (!newName || !String(newName).trim()) return;
+      parsed.id = `tour_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      parsed.name = String(newName).trim();
+      parsed.announcement = null;
+      (parsed.events || []).forEach((ev) => {
+        ev.staffPin = String(Math.floor(1000 + Math.random() * 9000));
+        ev.pinVersion = 1;
+        if (ev.data) {
+          ev.data.results = {};
+          if (ev.data.oop) {
+            ev.data.oop.statuses = {};
+            ev.data.oop.announcement = null;
+          }
+        }
+      });
+      if (typeof window.replaceTournamentBundle === 'function') {
+        window.replaceTournamentBundle(parsed);
+      }
+      await syncActiveBundleToCloud(true);
+      await fetchMyTournaments(false);
+      showToast(`「${parsed.name}」を複製して作成しました`, 'success');
+    } catch (err) {
+      alert('大会の複製に失敗しました: ' + err.message);
+    }
+  }
+
   // =========================================================================
-  // 4. 独立 公開ポータルモード（#public?t=<tid>：生徒・保護者の別端末リアルタイム閲覧）
+  // 4. 独立 公開ポータルモード（?public=<tid> / #public?t=<tid>：別端末リアルタイム閲覧）
   // =========================================================================
   async function startPublicStandaloneMode(tid) {
     cloud.isPublicStandalone = true;
     cloud.publicTid = tid;
-    // 管理用ヘッダー・バーを完全に隠す
-    const hdr = document.querySelector('header');
-    const evBar = document.getElementById('event-switcher-bar');
-    const previewBar = document.querySelector('#view-spectator > div:first-child');
-    if (hdr) hdr.classList.add('hidden');
-    if (evBar) evBar.classList.add('hidden');
-    if (previewBar) previewBar.classList.add('hidden');
+    document.documentElement.classList.add('standalone-public-boot');
 
-    document.getElementById('view-registration')?.classList.add('hidden');
-    document.getElementById('view-tournament')?.classList.add('hidden');
-    document.getElementById('view-oop')?.classList.add('hidden');
     const specView = document.getElementById('view-spectator');
     if (specView) specView.classList.remove('hidden');
 
@@ -562,8 +599,8 @@
       return;
     }
 
-    try {
-      const metaSnap = await cloud.db.collection('live_tournaments').doc(tid).get();
+    if (cloud.publicMetaUnsub) cloud.publicMetaUnsub();
+    cloud.publicMetaUnsub = cloud.db.collection('live_tournaments').doc(tid).onSnapshot((metaSnap) => {
       if (!metaSnap.exists) {
         if (frame) {
           frame.innerHTML = `<div class="p-10 text-center space-y-2"><div class="text-sm font-extrabold text-slate-800">大会ページが見つかりません</div><div class="text-xs text-slate-500">URLをご確認いただくか、大会本部がクラウド公開を完了するまでお待ちください。</div></div>`;
@@ -572,23 +609,33 @@
       }
       cloud.publicMeta = metaSnap.data();
       if (!cloud.publicMeta.publishEnabled) {
+        if (cloud.publicEventUnsub) { cloud.publicEventUnsub(); cloud.publicEventUnsub = null; }
         if (frame) {
           frame.innerHTML = `<div class="p-10 text-center space-y-2"><div class="text-2xl">🔒</div><div class="text-sm font-extrabold text-slate-800">${escapeHtml(cloud.publicMeta.name)}</div><div class="text-xs text-slate-500">現在この大会は非公開です。</div></div>`;
         }
         return;
       }
-      const firstEv = (cloud.publicMeta.events && cloud.publicMeta.events[0]) || null;
-      if (firstEv) {
-        subscribePublicEvent(tid, firstEv.id);
+      const events = cloud.publicMeta.events || [];
+      const stillExists = events.some((e) => e.id === cloud.publicCurrentEventId);
+      const targetEvId = stillExists ? cloud.publicCurrentEventId : (events[0] && events[0].id);
+      if (targetEvId && targetEvId !== cloud.publicCurrentEventId) {
+        subscribePublicEvent(tid, targetEvId);
+      } else if (cloud.publicLastEventObj && typeof window.renderStandalonePublicPortal === 'function') {
+        // 大会全体アナウンス等のメタ更新を即座に再描画
+        window.renderStandalonePublicPortal(cloud.publicMeta, cloud.publicLastEventObj, async (tryPass) => {
+          const h = await sha256Hex(`${tid}:${tryPass}`);
+          return h === (cloud.publicMeta.passcodeHash || '');
+        });
       }
-    } catch (err) {
+    }, (err) => {
       if (frame) {
-        frame.innerHTML = `<div class="p-10 text-center space-y-2"><div class="text-sm font-extrabold text-rose-700">読み込みエラー</div><div class="text-xs text-slate-500">${escapeHtml(err.message || '現在この大会は非公開または閲覧できません')}</div></div>`;
+        frame.innerHTML = `<div class="p-10 text-center space-y-2"><div class="text-sm font-extrabold text-rose-700">現在閲覧できません</div><div class="text-xs text-slate-500">${escapeHtml(err.code === 'permission-denied' ? '現在この大会は非公開に設定されています' : (err.message || ''))}</div></div>`;
       }
-    }
+    });
   }
 
   function subscribePublicEvent(tid, evId) {
+    cloud.publicCurrentEventId = evId;
     if (cloud.publicEventUnsub) {
       cloud.publicEventUnsub();
       cloud.publicEventUnsub = null;
@@ -615,6 +662,7 @@
           oop: d.oop || OopEngine.createDefaultOopState()
         }
       };
+      cloud.publicLastEventObj = liveEventObj;
       if (typeof window.renderStandalonePublicPortal === 'function') {
         window.renderStandalonePublicPortal(cloud.publicMeta, liveEventObj, async (tryPass) => {
           const h = await sha256Hex(`${tid}:${tryPass}`);
@@ -765,8 +813,21 @@
     }
   }
 
-  // URLハッシュ解析（#public?t=... / #staff?t=...&e=...）
+  // URLクエリ・ハッシュ解析（?public=<tid> / ?staff=<tid>&e=<evId> および旧 #public?t= / #staff?t= 両対応）
   function checkSpecialLaunchHash() {
+    const searchParams = new URLSearchParams(window.location.search || '');
+    const qPub = searchParams.get('public');
+    if (qPub) {
+      startPublicStandaloneMode(qPub);
+      return true;
+    }
+    const qStaff = searchParams.get('staff');
+    const qEv = searchParams.get('e');
+    if (qStaff && qEv) {
+      startStaffPinMode(qStaff, qEv);
+      return true;
+    }
+
     const hash = window.location.hash || '';
     if (hash.startsWith('#public')) {
       const qIdx = hash.indexOf('?');
@@ -797,6 +858,8 @@
     isStaffMode: () => Boolean(cloud.isStaffMode),
     isPublicStandalone: () => Boolean(cloud.isPublicStandalone),
     getUser: () => cloud.user,
+    getMyTournaments: () => cloud.myTournaments.slice(),
+    fetchMyTournaments,
     scheduleCloudSync,
     syncActiveBundleToCloud,
     deleteStaffKeyFromCloud,
@@ -810,6 +873,7 @@
   window.closeMyTournamentsModal = closeMyTournamentsModal;
   window.loadCloudTournament = loadCloudTournament;
   window.createNewCloudTournament = createNewCloudTournament;
+  window.duplicateCloudTournament = duplicateCloudTournament;
   window.deleteCloudTournament = deleteCloudTournament;
   window.syncNowToCloud = () => syncActiveBundleToCloud(true);
   window.submitStaffPinLogin = submitStaffPinLogin;

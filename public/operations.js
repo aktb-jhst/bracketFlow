@@ -20,6 +20,9 @@
     oopOpenWoKey: null,
     oopHideFinished: false,   // 終了済みをたたんで現在・次試合を左へ寄せる
     oopQueueDrawerOpen: false,
+    oopSplitBlock: 'ALL',     // 'ALL' | 'A' | 'B' | 'C' | 'D' | 'FINALS'
+    oopConflictsOpen: false,
+    homeSearchQuery: '',
     oopUndoStack: [],         // 進行表のコート移動・再配分Undoスタック
     oopFinishedCollapsed: {}, // { [courtKey]: boolean }
     standalonePublic: null,   // { meta, liveEvent, verifyPasscodeFn, unlocked }
@@ -620,18 +623,37 @@
     }
 
     const btnBoard = document.getElementById('btn-oop-view-board');
+    const btnSplit = document.getElementById('btn-oop-view-split');
     const btnTable = document.getElementById('btn-oop-view-table');
     const boardWs = document.getElementById('oop-board-workspace');
     const tableWs = document.getElementById('oop-table-workspace');
-    const isTable = state.oop.viewStyle === 'table';
+    const splitPane = document.getElementById('oop-split-bracket-pane');
+    const viewStyle = state.oop.viewStyle || 'board';
+    const isTable = viewStyle === 'table';
+    const isSplit = viewStyle === 'split';
     if (btnBoard && btnTable) {
       const onCls = 'px-2.5 py-1 text-[11px] font-bold rounded-md bg-slate-900 text-white shadow-sm transition';
       const offCls = 'px-2.5 py-1 text-[11px] font-bold rounded-md text-slate-600 hover:text-slate-900 transition';
-      btnBoard.className = !isTable ? onCls : offCls;
+      btnBoard.className = viewStyle === 'board' ? onCls : offCls;
+      if (btnSplit) btnSplit.className = isSplit ? onCls : offCls;
       btnTable.className = isTable ? onCls : offCls;
     }
     if (boardWs) boardWs.classList.toggle('hidden', isTable);
     if (tableWs) tableWs.classList.toggle('hidden', !isTable);
+    if (splitPane) splitPane.classList.toggle('hidden', !isSplit);
+
+    // アナウンス稼働インジケータ
+    const annDot = document.getElementById('oop-announce-dot');
+    const hasAnn = Boolean((opsUi.bundle && opsUi.bundle.announcement && opsUi.bundle.announcement.text) || (state.oop && state.oop.announcement && state.oop.announcement.text));
+    if (annDot) annDot.classList.toggle('hidden', !hasAnn);
+
+    const blankBtn = document.getElementById('btn-oop-add-blank');
+    if (blankBtn) {
+      const pickingBlank = opsUi.oopSelectedMoveKey === '__NEW_BLANK__';
+      blankBtn.className = pickingBlank
+        ? 'px-2.5 py-1 text-[11px] font-bold rounded-lg border border-amber-600 bg-amber-500 text-white shadow-sm transition'
+        : 'px-2.5 py-1 text-[11px] font-bold rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 transition';
+    }
 
     const cancelMoveBtn = document.getElementById('btn-oop-cancel-move');
     if (cancelMoveBtn) cancelMoveBtn.classList.toggle('hidden', !opsUi.oopSelectedMoveKey);
@@ -652,15 +674,21 @@
     document.body.classList.toggle('oop-move-mode-active', Boolean(opsUi.oopSelectedMoveKey));
     const moveHint = document.getElementById('oop-move-hint');
     if (moveHint) {
-      if (opsUi.oopSelectedMoveKey && catalog.matchMap[opsUi.oopSelectedMoveKey]) {
+      if (opsUi.oopSelectedMoveKey === '__NEW_BLANK__') {
+        moveHint.innerHTML = `<span class="text-amber-700 font-bold">空き枠を挿入する位置（試合の間の「＋」）をクリックしてください</span>`;
+      } else if (opsUi.oopSelectedMoveKey && OopEngine.isBlankKey(opsUi.oopSelectedMoveKey)) {
+        moveHint.innerHTML = `<span class="text-blue-700 font-bold">空き枠の移動先（「＋」）をクリックしてください</span>`;
+      } else if (opsUi.oopSelectedMoveKey && catalog.matchMap[opsUi.oopSelectedMoveKey]) {
         const sm = catalog.matchMap[opsUi.oopSelectedMoveKey];
         moveHint.innerHTML = `<span class="text-blue-700 font-bold">移動先を選択中（${escapeHtml(sm.matchNo)}）：挿入したい試合の間の「＋」をクリックしてください</span>`;
       } else {
-        moveHint.textContent = 'カードをドラッグまたは「移動」で、任意の試合と試合の間に挿入できます';
+        moveHint.textContent = isSplit
+          ? '左のトーナメントT字アイコンを右のコートへドラッグ（またはクリック→＋）して進行表を作成できます'
+          : 'カードをドラッグまたは「移動」で、任意の試合と試合の間に挿入できます';
       }
     }
 
-    // 進捗サマリー計算
+    // 進捗サマリー ＆ 時系列矛盾チェック
     let playing = 0;
     let calling = 0;
     let finished = 0;
@@ -674,36 +702,68 @@
     });
     const total = catalog.matches.length;
     const pct = total > 0 ? Math.round((finished / total) * 100) : 0;
+    const conflictInfo = OopEngine.detectTimelineConflicts(state.oop, catalog);
+    const conflictCount = conflictInfo.conflicts.length;
 
     const statsBar = document.getElementById('oop-stats-bar');
     if (statsBar) {
+      const conflictBadge = conflictCount > 0
+        ? `<button onclick="toggleOopConflictsDrawer()" class="px-2 py-0.5 rounded-full bg-rose-600 hover:bg-rose-500 text-white font-bold shadow-sm transition">⚠ 時系列矛盾 ${conflictCount}件 ▾</button>`
+        : `<span class="px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 font-bold text-emerald-700">✓ 時系列OK</span>`;
       statsBar.innerHTML = `
         <span class="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 font-bold text-slate-700">全${total}試合（進捗 ${pct}%）</span>
         <span class="px-2 py-0.5 rounded-full bg-rose-100 border border-rose-200 font-bold text-rose-800">試合中 ${playing}</span>
         <span class="px-2 py-0.5 rounded-full bg-amber-100 border border-amber-200 font-bold text-amber-800">コール中 ${calling}</span>
         <span class="px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 font-bold text-blue-800">実施可能待機 ${readyWaiting}</span>
         <span class="px-2 py-0.5 rounded-full bg-emerald-100 border border-emerald-200 font-bold text-emerald-800">終了 ${finished}</span>
+        ${conflictBadge}
       `;
     }
 
+    const conflictsDrawer = document.getElementById('oop-conflicts-drawer');
+    if (conflictsDrawer) {
+      if (conflictCount === 0) {
+        opsUi.oopConflictsOpen = false;
+        conflictsDrawer.classList.add('hidden');
+      } else {
+        conflictsDrawer.classList.toggle('hidden', !opsUi.oopConflictsOpen);
+        conflictsDrawer.innerHTML = `
+          <div class="flex items-center justify-between font-bold text-rose-900">
+            <span>⚠ 時系列の矛盾が ${conflictCount} 件あります（空き枠の挿入または順序入れ替えで解消できます）</span>
+            <button onclick="toggleOopConflictsDrawer()" class="text-rose-600 hover:text-rose-900 px-1">✕</button>
+          </div>
+          <div class="flex flex-wrap gap-1.5 pt-1">
+            ${conflictInfo.conflicts.map((cf) => `
+              <button onclick="jumpToOopCard('${escapeJs(cf.matchKey)}')"
+                      class="px-2 py-1 rounded bg-white hover:bg-rose-100 border border-rose-300 text-rose-900 text-left font-semibold transition">
+                <b>${escapeHtml(cf.matchNo)}</b>（C${cf.courtKey}-第${cf.colIdx + 1}）: ${escapeHtml(cf.message)}
+              </button>
+            `).join('')}
+          </div>
+        `;
+      }
+    }
+
     if (!isTable) {
-      renderOopBoard(catalog, unassigned);
+      if (isSplit) renderOopSplitBracket(catalog);
+      renderOopBoard(catalog, unassigned, conflictInfo.conflictMap);
     } else {
       renderOopPrintSheet(catalog);
     }
   }
 
-  function renderOopBoard(catalog, unassigned) {
+  function renderOopBoard(catalog, unassigned, conflictMap) {
     const grid = document.getElementById('oop-courts-grid');
     if (!grid) return;
+    const cMap = conflictMap || {};
 
     const nCourts = state.oop.courtCount || 4;
     const formatter = (entry) => OopEngine.formatSpectatorPairName(entry, 'full', formatSchoolShortName);
 
-    // 未割当サイドバーの表示制御（未割当があるか手動展開時のみ表示して横幅を最大活用）
+    // 未割当サイドバーの表示制御（2分割モード中は左トーナメントから直接ドラッグできるため自動非表示、手動展開時のみ表示）
     const sidebar = document.getElementById('oop-queue-sidebar');
     if (sidebar) {
-      const showSidebar = opsUi.oopQueueDrawerOpen || unassigned.length > 0;
+      const showSidebar = opsUi.oopQueueDrawerOpen || (state.oop.viewStyle !== 'split' && unassigned.length > 0);
       sidebar.classList.toggle('hidden', !showSidebar);
     }
 
@@ -713,6 +773,7 @@
     for (let c = 1; c <= nCourts; c++) {
       const cKey = String(c);
       const courtKeys = Array.isArray(state.oop.courts[cKey]) ? state.oop.courts[cKey] : [];
+      const realCount = courtKeys.filter((k) => !OopEngine.isBlankKey(k)).length;
       const live = OopEngine.getCourtLiveSlots(courtKeys, catalog.matchMap, state.oop.statuses);
       const items = [];
       let hiddenFinishedCount = 0;
@@ -724,6 +785,10 @@
       if (live.onDeck) roleMap[live.onDeck.key] = 'ONDECK';
 
       courtKeys.forEach((mKey, rawIdx) => {
+        if (OopEngine.isBlankKey(mKey)) {
+          items.push({ key: mKey, isBlank: true, indexInCourt: rawIdx });
+          return;
+        }
         const m = catalog.matchMap[mKey];
         if (!m) return;
         const st = state.oop.statuses[mKey] || 'waiting';
@@ -731,11 +796,11 @@
           hiddenFinishedCount++;
           return;
         }
-        items.push({ key: mKey, match: m, status: st, indexInCourt: rawIdx, role: roleMap[mKey] || '' });
+        items.push({ key: mKey, isBlank: false, match: m, status: st, indexInCourt: rawIdx, role: roleMap[mKey] || '' });
       });
 
       if (items.length > maxVisibleCols) maxVisibleCols = items.length;
-      courtRowsData.push({ c, cKey, courtKeys, live, items, hiddenFinishedCount });
+      courtRowsData.push({ c, cKey, courtKeys, realCount, live, items, hiddenFinishedCount });
     }
 
     const renderInsertZone = (courtKey, insertIdx, labelText) => `
@@ -751,7 +816,7 @@
 
     // 全コート横タイムライン一覧テーブル構造
     let rowsHtml = '';
-    courtRowsData.forEach(({ c, cKey, courtKeys, live, items, hiddenFinishedCount }) => {
+    courtRowsData.forEach(({ c, cKey, courtKeys, realCount, live, items, hiddenFinishedCount }) => {
       let statusBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-200 text-slate-700">空き</span>`;
       let rowAccent = 'border-l-slate-300';
       if (live.current && live.current.status === 'playing') {
@@ -760,12 +825,12 @@
       } else if (live.current && live.current.status === 'calling') {
         statusBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500 text-white">コール中</span>`;
         rowAccent = 'border-l-amber-500';
-      } else if (courtKeys.length > 0 && live.finished.length === courtKeys.length) {
+      } else if (realCount > 0 && live.finished.length === realCount) {
         statusBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">完了</span>`;
         rowAccent = 'border-l-emerald-500';
       }
 
-      // 横並びの試合カード＋カード間挿入スロット
+      // 横並びの試合カード＋空き枠カード＋カード間挿入スロット
       let laneHtml = '';
       if (hiddenFinishedCount > 0) {
         laneHtml += `
@@ -782,7 +847,8 @@
         laneHtml += `
           <div class="flex items-center flex-1 min-h-[96px]">
             ${renderInsertZone(cKey, courtKeys.length, `コート${c}の先頭へ挿入`)}
-            <div class="flex-1 text-center text-[11px] text-slate-400 py-4 border border-dashed border-slate-200 rounded-lg mx-1"
+            <div class="flex-1 min-w-[200px] text-center text-[11px] text-slate-400 py-4 px-3 border border-dashed border-slate-200 rounded-lg mx-1"
+                 onclick="handleOopInsertZoneClick('${cKey}', ${courtKeys.length})"
                  ondragover="handleOopDragOver(event)"
                  ondragleave="handleOopDragLeave(event)"
                  ondrop="handleOopInsertDrop(event, '${cKey}', ${courtKeys.length})">
@@ -794,10 +860,16 @@
         // 先頭の挿入スロット
         laneHtml += renderInsertZone(cKey, items[0].indexInCourt, `コート${c} 第${items[0].indexInCourt + 1}試合の前に挿入`);
         items.forEach((item, visIdx) => {
-          laneHtml += renderOopTimelineCardHtml(item, cKey, courtKeys, catalog.matchMap, formatter);
+          if (item.isBlank) {
+            laneHtml += renderOopBlankCardHtml(item, cKey);
+          } else {
+            laneHtml += renderOopTimelineCardHtml(item, cKey, courtKeys, catalog.matchMap, formatter, cMap[item.key] || []);
+          }
           const nextInsertIdx = item.indexInCourt + 1;
-          const label = visIdx < items.length - 1
-            ? `コート${c} ${item.match.matchNo}と${items[visIdx + 1].match.matchNo}の間に挿入`
+          const curLabel = item.isBlank ? '空き枠' : item.match.matchNo;
+          const nextItem = items[visIdx + 1];
+          const label = nextItem
+            ? `コート${c} ${curLabel}と${nextItem.isBlank ? '空き枠' : nextItem.match.matchNo}の間に挿入`
             : `コート${c} の末尾へ追加`;
           laneHtml += renderInsertZone(cKey, nextInsertIdx, label);
         });
@@ -813,7 +885,7 @@
             </div>
             <div class="pt-1.5 border-t border-slate-200/80 text-[10px] font-bold text-slate-500 flex items-center justify-between">
               <span>進捗</span>
-              <span>${live.finished.length}/${courtKeys.length}</span>
+              <span>${live.finished.length}/${realCount}</span>
             </div>
           </div>
 
@@ -876,10 +948,42 @@
     }
   }
 
-  function renderOopTimelineCardHtml(item, courtKey, courtKeys, matchMap, formatter) {
+  function renderOopBlankCardHtml(item, courtKey) {
+    const bKey = item.key;
+    const isSelected = opsUi.oopSelectedMoveKey === bKey;
+    const label = (state.oop.blankLabels && state.oop.blankLabels[bKey]) || '空き（進行調整）';
+    return `
+      <div draggable="true"
+           ondragstart="handleOopDragStart(event, '${escapeJs(bKey)}')"
+           ondragend="handleOopDragEnd(event)"
+           ondragover="handleOopCardDragOver(event)"
+           ondragleave="handleOopCardDragLeave(event)"
+           ondrop="handleOopCardDrop(event, '${courtKey}', ${item.indexInCourt})"
+           class="oop-match-card ${isSelected ? 'oop-selected-move' : ''} w-[216px] shrink-0 p-2 rounded-lg border-2 border-dashed border-amber-300 bg-amber-50/50 text-[11px] flex flex-col justify-between gap-1.5 cursor-grab active:cursor-grabbing">
+        <div class="flex items-center justify-between gap-1">
+          <span class="px-1.5 py-0.5 rounded bg-amber-200/80 text-amber-950 text-[9.5px] font-extrabold">空き枠・進行調整</span>
+          <div class="flex items-center gap-1">
+            <button onclick="selectOopMatchForMove('${escapeJs(bKey)}')" class="px-1.5 py-0.2 text-[9px] font-bold rounded border bg-white text-slate-600 border-slate-300 hover:bg-blue-50">移動</button>
+            <button onclick="removeOopItem('${escapeJs(bKey)}')" class="px-1 text-[11px] font-bold text-slate-400 hover:text-rose-600" title="空き枠を削除">×</button>
+          </div>
+        </div>
+        <div class="text-center py-2 px-1">
+          <div class="text-xs font-extrabold text-amber-900 truncate" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
+          <div class="text-[9.5px] text-amber-700/80 mt-0.5">この列は意図的に空けて進行を揃えます</div>
+        </div>
+        <div class="flex justify-end">
+          <button onclick="editOopBlankLabel('${escapeJs(bKey)}')" class="px-2 py-0.5 text-[9.5px] font-bold bg-white hover:bg-amber-100 border border-amber-300 rounded text-amber-900">ラベル変更</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderOopTimelineCardHtml(item, courtKey, courtKeys, matchMap, formatter, cardConflicts) {
     const m = item.match;
     const st = item.status;
     const role = item.role;
+    const conflicts = Array.isArray(cardConflicts) ? cardConflicts : [];
+    const hasConflict = conflicts.length > 0;
     const isSelected = opsUi.oopSelectedMoveKey === m.key;
     const isWoOpen = opsUi.oopOpenWoKey === m.key;
     const isFinished = st === 'finished' || st === 'wo';
@@ -903,6 +1007,9 @@
     } else if (role === 'ONDECK') {
       cardStyle = 'bg-sky-50/30 border-slate-300';
       rolePill = `<span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-slate-200 text-slate-700">次々</span>`;
+    }
+    if (hasConflict) {
+      cardStyle = 'bg-rose-50 border-rose-500 ring-2 ring-rose-400/70';
     }
 
     const mtBadge = m.isConsolation
@@ -965,24 +1072,31 @@
       </div>` : '';
 
     return `
-      <div ${dragAttrs}
+      <div data-oop-card-key="${escapeHtml(m.key)}"
+           ${dragAttrs}
            ondragover="handleOopCardDragOver(event)"
            ondragleave="handleOopCardDragLeave(event)"
            ondrop="handleOopCardDrop(event, '${courtKey}', ${item.indexInCourt})"
            class="oop-match-card ${isSelected ? 'oop-selected-move' : ''} w-[216px] shrink-0 p-2 rounded-lg border ${cardStyle} text-[11px] flex flex-col justify-between gap-1 ${canMove ? 'cursor-grab active:cursor-grabbing' : ''}">
         <div class="space-y-1">
-          <!-- 1行目：試合番号・ラウンド・状態・移動 -->
+          <!-- 1行目：試合番号・ラウンド・状態・移動・外す -->
           <div class="flex items-center justify-between gap-1">
             <div class="flex items-center gap-1 min-w-0">
               <span class="font-extrabold text-slate-900 text-[11px]">${escapeHtml(m.matchNo)}</span>
               <span class="text-[10px] font-bold text-slate-500 truncate">${escapeHtml(m.roundLabel)}</span>
               ${mtBadge}
             </div>
-            <div class="flex items-center gap-1 shrink-0">
+            <div class="flex items-center gap-0.5 shrink-0">
               ${rolePill}
               ${canMove ? `<button onclick="selectOopMatchForMove('${escapeJs(m.key)}')" class="px-1.5 py-0.2 text-[9px] font-bold rounded border ${isSelected ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-blue-50'}" title="別の場所・試合間へ挿入移動">移動</button>` : ''}
+              ${st === 'waiting' ? `<button onclick="removeOopItem('${escapeJs(m.key)}')" class="px-1 text-[11px] font-bold text-slate-400 hover:text-rose-600" title="進行表から外して未配置に戻す">×</button>` : ''}
             </div>
           </div>
+
+          ${hasConflict ? `
+            <div class="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[9.5px] font-bold leading-tight" title="${escapeHtml(conflicts.map((x) => x.message).join(' / '))}">
+              ⚠ 時系列矛盾: ${escapeHtml(conflicts[0].message)}
+            </div>` : ''}
 
           <!-- 2行目：対戦カード -->
           <div class="pl-1.5 border-l-2 ${m.isReady ? 'border-slate-300' : 'border-dashed border-slate-200'} space-y-0.5 leading-tight">
@@ -1062,6 +1176,10 @@
           ${courtList.map((cKey) => {
             const cKeys = state.oop.courts[cKey] || [];
             const mKey = cKeys[r];
+            if (OopEngine.isBlankKey(mKey)) {
+              const bLabel = (state.oop.blankLabels && state.oop.blankLabels[mKey]) || '空き（進行調整）';
+              return `<td class="border border-slate-400 bg-amber-50/40 p-2 text-center text-[10px] font-bold text-amber-900 align-middle">${escapeHtml(bLabel)}</td>`;
+            }
             const m = mKey ? catalog.matchMap[mKey] : null;
             if (!m) {
               return `<td class="border border-slate-300 bg-slate-50/40 p-1.5 text-center text-[10px] text-slate-300">-</td>`;
@@ -1137,7 +1255,9 @@
     opsUi.oopUndoStack.push({
       courtCount: state.oop.courtCount,
       courts: cloneDeep(state.oop.courts || {}),
-      statuses: cloneDeep(state.oop.statuses || {})
+      statuses: cloneDeep(state.oop.statuses || {}),
+      blankLabels: cloneDeep(state.oop.blankLabels || {}),
+      manualEmpty: Boolean(state.oop.manualEmpty)
     });
     if (opsUi.oopUndoStack.length > 30) opsUi.oopUndoStack.shift();
   }
@@ -1148,6 +1268,8 @@
     state.oop.courtCount = prev.courtCount;
     state.oop.courts = prev.courts;
     state.oop.statuses = prev.statuses;
+    state.oop.blankLabels = prev.blankLabels || {};
+    state.oop.manualEmpty = Boolean(prev.manualEmpty);
     state.oop.updatedAt = new Date().toISOString();
     saveToLocalStorage();
     renderOopView();
@@ -1198,9 +1320,289 @@
   }
 
   function setOopViewStyle(style) {
-    state.oop.viewStyle = style === 'table' ? 'table' : 'board';
+    state.oop.viewStyle = ['board', 'split', 'table'].includes(style) ? style : 'board';
     saveToLocalStorage();
     renderOopView();
+  }
+
+  function setOopSplitBlock(blk) {
+    opsUi.oopSplitBlock = ['ALL', 'A', 'B', 'C', 'D', 'FINALS'].includes(blk) ? blk : 'ALL';
+    renderOopView();
+  }
+
+  function toggleOopConflictsDrawer() {
+    opsUi.oopConflictsOpen = !opsUi.oopConflictsOpen;
+    renderOopView();
+  }
+
+  function highlightOopCard(matchKey) {
+    document.querySelectorAll('[data-oop-card-key]').forEach((el) => {
+      el.classList.toggle('oop-card-hover-link', Boolean(matchKey) && el.dataset.oopCardKey === matchKey);
+    });
+  }
+
+  function jumpToOopCard(matchKey) {
+    const el = document.querySelector(`[data-oop-card-key="${matchKey}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      el.classList.add('oop-card-hover-link');
+      setTimeout(() => el.classList.remove('oop-card-hover-link'), 2200);
+    }
+  }
+
+  function selectNewOopBlankForInsert() {
+    opsUi.oopSelectedMoveKey = (opsUi.oopSelectedMoveKey === '__NEW_BLANK__') ? null : '__NEW_BLANK__';
+    renderOopView();
+  }
+
+  function editOopBlankLabel(blankKey) {
+    const cur = (state.oop.blankLabels && state.oop.blankLabels[blankKey]) || '空き（進行調整）';
+    const next = prompt('空き枠のラベルを入力してください（例：ベスト8揃え待機、昼休憩、コート整備）', cur);
+    if (next === null) return;
+    if (!state.oop.blankLabels) state.oop.blankLabels = {};
+    state.oop.blankLabels[blankKey] = String(next).trim() || '空き（進行調整）';
+    state.oop.updatedAt = new Date().toISOString();
+    saveToLocalStorage();
+    renderOopView();
+  }
+
+  function removeOopItem(itemKey) {
+    if (!state.oop || !state.oop.courts) return;
+    pushOopUndo();
+    Object.keys(state.oop.courts).forEach((cKey) => {
+      state.oop.courts[cKey] = (state.oop.courts[cKey] || []).filter((k) => k !== itemKey);
+    });
+    if (OopEngine.isBlankKey(itemKey) && state.oop.blankLabels) {
+      delete state.oop.blankLabels[itemKey];
+    }
+    state.oop.manualEmpty = true;
+    state.oop.updatedAt = new Date().toISOString();
+    saveToLocalStorage();
+    renderOopView();
+    showToast(OopEngine.isBlankKey(itemKey) ? '空き枠を削除しました' : '試合を進行表から外して未配置に戻しました', 'info', 1800);
+  }
+
+  function alignOopQuarterfinals() {
+    const catalog = getActiveMatchCatalog('full');
+    const hasQF = catalog.matches.some((m) => m.roundLabel === '準々決勝');
+    const targetLabel = hasQF ? '準々決勝' : '準決勝';
+    pushOopUndo();
+    const res = OopEngine.alignRoundWithBlanks(state.oop, catalog, targetLabel, `${targetLabel}揃え待機`);
+    state.oop.courts = res.courts;
+    state.oop.blankLabels = res.blankLabels;
+    state.oop.updatedAt = new Date().toISOString();
+    saveToLocalStorage();
+    renderOopView();
+    if (res.insertedCount > 0) {
+      showToast(`${targetLabel}を第${res.alignedColumn}試合列へ揃えるため空き枠を${res.insertedCount}個挿入しました`, 'success');
+    } else {
+      showToast(`${targetLabel}の開始列はすでに揃っています`, 'info');
+    }
+  }
+
+  function clearAllOopAssignments() {
+    if (!confirm('待機中の試合をすべて未配置にして、左のトーナメントから手動で組み直しますか？（試合中・終了済みは保持されます）')) return;
+    pushOopUndo();
+    Object.keys(state.oop.courts || {}).forEach((cKey) => {
+      state.oop.courts[cKey] = (state.oop.courts[cKey] || []).filter((k) => {
+        if (OopEngine.isBlankKey(k)) return false;
+        const st = state.oop.statuses[k];
+        return st === 'playing' || st === 'calling' || st === 'finished' || st === 'wo';
+      });
+    });
+    state.oop.blankLabels = {};
+    state.oop.manualEmpty = true;
+    state.oop.updatedAt = new Date().toISOString();
+    saveToLocalStorage();
+    renderOopView();
+    showToast('待機試合を未配置に戻しました。左のT字アイコンから右へドラッグして配置できます。', 'info', 3000);
+  }
+
+  /**
+   * 2分割モード左ペイン：トーナメント表＋各対戦のT字結合点にドラッグ可能なアイコンを描画
+   */
+  function renderOopSplitBracket(catalog) {
+    const box = document.getElementById('oop-split-bracket-scroll');
+    if (!box) return;
+
+    // ブロック切替ボタンのスタイル同期
+    ['ALL', 'A', 'B', 'C', 'D', 'FINALS'].forEach((b) => {
+      const btn = document.getElementById(`btn-oop-blk-${b}`);
+      if (!btn) return;
+      btn.className = opsUi.oopSplitBlock === b
+        ? 'px-2 py-0.5 text-[10px] font-bold rounded bg-slate-900 text-white shadow-sm'
+        : 'px-2 py-0.5 text-[10px] font-bold rounded bg-slate-200 hover:bg-slate-300 text-slate-700';
+    });
+
+    // 各試合の現在のコート位置をマップ
+    const locMap = {};
+    Object.keys(state.oop.courts || {}).forEach((cKey) => {
+      (state.oop.courts[cKey] || []).forEach((k, idx) => {
+        if (!OopEngine.isBlankKey(k)) locMap[k] = { court: cKey, order: idx + 1 };
+      });
+    });
+
+    const blk = opsUi.oopSplitBlock;
+    const size = state.bracketSize || 16;
+    const totalRounds = Math.round(Math.log2(size));
+    const tree = catalog.tree;
+
+    // 準決・決勝＋順位決定戦リスト表示モード
+    if (blk === 'FINALS') {
+      const finalMatches = catalog.matches.filter((m) => m.isConsolation || m.round >= Math.max(1, totalRounds - 1));
+      if (!finalMatches.length) {
+        box.innerHTML = `<div class="py-10 text-center text-xs text-slate-400">準決勝・決勝・順位戦がありません</div>`;
+        return;
+      }
+      box.innerHTML = `<div class="space-y-2">${finalMatches.map((m) => {
+        const loc = locMap[m.key];
+        const isPicked = opsUi.oopSelectedMoveKey === m.key;
+        const badgeCls = isPicked
+          ? 'bg-amber-500 text-white border-amber-600'
+          : (loc ? 'bg-emerald-50 text-emerald-700 border-emerald-400' : 'bg-blue-600 text-white border-blue-700');
+        return `
+          <div draggable="true"
+               ondragstart="handleOopDragStart(event, '${escapeJs(m.key)}')"
+               ondragend="handleOopDragEnd(event)"
+               onmouseenter="highlightOopCard('${escapeJs(m.key)}')"
+               onmouseleave="highlightOopCard(null)"
+               class="p-2.5 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-between gap-2 cursor-grab">
+            <div class="min-w-0 flex-1 text-xs">
+              <div class="font-extrabold text-slate-800">${escapeHtml(m.matchNo)} <span class="text-[10px] text-slate-500">${escapeHtml(m.roundLabel)}</span></div>
+              <div class="truncate font-semibold text-slate-700 mt-0.5">${escapeHtml(m.p1Label)} vs ${escapeHtml(m.p2Label)}</div>
+            </div>
+            <button type="button" onclick="selectOopMatchForMove('${escapeJs(m.key)}')"
+                    class="px-2 py-1 rounded-full border text-[10px] font-extrabold shrink-0 ${badgeCls}">
+              ${loc ? `C${loc.court}-${loc.order}` : `⠿ ${escapeHtml(m.matchNo)}`}
+            </button>
+          </div>
+        `;
+      }).join('')}</div>`;
+      return;
+    }
+
+    // 全体 または A/B/C/D ブロックの部分トーナメント描画
+    let startSlot = 0;
+    let endSlot = size;
+    let maxRound = totalRounds;
+    if (blk !== 'ALL' && size >= 8) {
+      const qMap = { A: 0, D: 1, C: 2, B: 3 };
+      const qIdx = qMap[blk] ?? 0;
+      const qSize = size / 4;
+      startSlot = qIdx * qSize;
+      endSlot = startSlot + qSize;
+      maxRound = Math.max(1, totalRounds - 2);
+    }
+
+    const activeIndices = [];
+    for (let i = startSlot; i < endSlot; i++) {
+      if (state.activeSlotMask[i]) activeIndices.push(i);
+    }
+    const slotToNum = {};
+    let dNo = 1;
+    for (let i = 0; i < size; i++) {
+      if (state.activeSlotMask[i]) slotToNum[i] = dNo++;
+    }
+
+    const rowH = activeIndices.length >= 24 ? 26 : 30;
+    const labelW = 165;
+    const stepW = Math.max(48, Math.min(62, Math.floor(240 / Math.max(1, maxRound))));
+    const totalW = labelW + maxRound * stepW + 64;
+    const totalH = Math.max(180, activeIndices.length * rowH + 28);
+
+    const nodeY = { 0: {} };
+    activeIndices.forEach((slotIdx, vRow) => {
+      nodeY[0][slotIdx] = vRow * rowH + rowH / 2 + 12;
+    });
+    for (let r = 1; r <= maxRound; r++) {
+      nodeY[r] = {};
+      const mStart = startSlot / Math.pow(2, r);
+      const mEnd = endSlot / Math.pow(2, r);
+      for (let m = mStart; m < mEnd; m++) {
+        const node = tree[r][m];
+        const y0 = nodeY[r - 1][m * 2];
+        const y1 = nodeY[r - 1][m * 2 + 1];
+        if (!node.active) nodeY[r][m] = 0;
+        else if (node.isBye) nodeY[r][m] = node.c0.active ? y0 : y1;
+        else nodeY[r][m] = (y0 + y1) / 2;
+      }
+    }
+
+    const effX = (node, round) => {
+      if (round === 0) return labelW;
+      if (node.isBye) return effX(node.c0.active ? node.c0 : node.c1, round - 1);
+      return labelW + round * stepW;
+    };
+
+    let svgLines = '';
+    let htmlItems = '';
+
+    activeIndices.forEach((slotIdx) => {
+      const leaf = tree[0][slotIdx];
+      const y = nodeY[0][slotIdx];
+      const nameStr = leaf.entry ? OopEngine.formatSpectatorPairName(leaf.entry, 'full', formatSchoolShortName) : '空き';
+      htmlItems += `<div style="left:0; top:${y - 10}px; width:${labelW - 6}px; height:20px;"
+                         class="absolute flex items-center gap-1 text-[11px] leading-tight">
+        <span class="w-5 text-right font-bold text-slate-400 shrink-0">${slotToNum[slotIdx]}</span>
+        <span class="font-bold text-slate-800 truncate" title="${escapeHtml(nameStr)}">${escapeHtml(nameStr)}</span>
+      </div>`;
+    });
+
+    for (let r = 1; r <= maxRound; r++) {
+      const xCurr = labelW + r * stepW;
+      const mStart = startSlot / Math.pow(2, r);
+      const mEnd = endSlot / Math.pow(2, r);
+      for (let m = mStart; m < mEnd; m++) {
+        const node = tree[r][m];
+        if (!node.active || node.isBye) continue;
+        const y0 = nodeY[r - 1][m * 2];
+        const y1 = nodeY[r - 1][m * 2 + 1];
+        const yMid = nodeY[r][m];
+        const x0 = effX(node.c0, r - 1);
+        const x1 = effX(node.c1, r - 1);
+        const isDone = Boolean(node.result);
+        const col = isDone ? '#dc2626' : '#64748b';
+        svgLines += `<line x1="${x0}" y1="${y0}" x2="${xCurr}" y2="${y0}" stroke="${col}" stroke-width="1.4" />`;
+        svgLines += `<line x1="${x1}" y1="${y1}" x2="${xCurr}" y2="${y1}" stroke="${col}" stroke-width="1.4" />`;
+        svgLines += `<line x1="${xCurr}" y1="${y0}" x2="${xCurr}" y2="${y1}" stroke="${col}" stroke-width="1.4" />`;
+
+        const mKey = `${r}_${m}`;
+        const mObj = catalog.matchMap[mKey];
+        if (mObj) {
+          const loc = locMap[mKey];
+          const isPicked = opsUi.oopSelectedMoveKey === mKey;
+          const cls = isPicked
+            ? 'bg-amber-500 text-white border-amber-600 ring-2 ring-amber-300'
+            : (mObj.isFinished
+              ? 'bg-slate-200 text-slate-600 border-slate-300'
+              : (loc
+                ? 'bg-emerald-50 text-emerald-800 border-emerald-500 shadow-sm'
+                : 'bg-blue-600 text-white border-blue-700 shadow-sm'));
+          const text = mObj.isFinished ? `済` : (loc ? `C${loc.court}-${loc.order}` : `⠿ ${mObj.matchNo}`);
+          htmlItems += `
+            <button type="button"
+                    draggable="${!mObj.isFinished}"
+                    ondragstart="handleOopDragStart(event, '${escapeJs(mKey)}')"
+                    ondragend="handleOopDragEnd(event)"
+                    onclick="selectOopMatchForMove('${escapeJs(mKey)}')"
+                    onmouseenter="highlightOopCard('${escapeJs(mKey)}')"
+                    onmouseleave="highlightOopCard(null)"
+                    style="left:${xCurr}px; top:${yMid}px; transform:translate(-50%,-50%);"
+                    title="${escapeHtml(mObj.matchNo)}（${escapeHtml(mObj.roundLabel)}）${escapeHtml(mObj.p1Label)} vs ${escapeHtml(mObj.p2Label)}"
+                    class="oop-t-handle absolute px-1.5 py-0.5 rounded-full border text-[10px] font-extrabold whitespace-nowrap leading-none z-10 ${cls}">
+              ${escapeHtml(text)}
+            </button>
+          `;
+        }
+      }
+    }
+
+    box.innerHTML = `
+      <div class="relative" style="width:${totalW}px; height:${totalH}px;">
+        <svg width="${totalW}" height="${totalH}" class="absolute inset-0 pointer-events-none">${svgLines}</svg>
+        ${htmlItems}
+      </div>
+    `;
   }
 
   function toggleOopCourtFinished(courtKey) {
@@ -1281,7 +1683,13 @@
   function moveOopMatchToCourt(matchKey, targetCourtKey, insertIndex) {
     if (!matchKey || !state.oop || !state.oop.courts[targetCourtKey]) return;
     pushOopUndo();
-    const moved = OopEngine.moveMatchInCourts(state.oop.courts, matchKey, targetCourtKey, insertIndex);
+    let keyToInsert = matchKey;
+    if (matchKey === '__NEW_BLANK__') {
+      keyToInsert = `__blank_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      if (!state.oop.blankLabels) state.oop.blankLabels = {};
+      state.oop.blankLabels[keyToInsert] = '空き（進行調整）';
+    }
+    const moved = OopEngine.moveMatchInCourts(state.oop.courts, keyToInsert, targetCourtKey, insertIndex);
     state.oop.courts = moved.courts;
     state.oop.updatedAt = new Date().toISOString();
     opsUi.oopSelectedMoveKey = null;
@@ -1289,7 +1697,13 @@
     document.body.classList.remove('oop-move-mode-active');
     saveToLocalStorage();
     renderOopView();
-    showToast(`コート${targetCourtKey}の第${moved.insertedIndex + 1}試合位置へ移動しました`, 'info', 2000);
+    showToast(
+      OopEngine.isBlankKey(keyToInsert)
+        ? `コート${targetCourtKey}の第${moved.insertedIndex + 1}試合位置へ空き枠を挿入しました`
+        : `コート${targetCourtKey}の第${moved.insertedIndex + 1}試合位置へ移動しました`,
+      'info',
+      2000
+    );
   }
 
   function toggleOopHideFinished() {
@@ -1561,6 +1975,10 @@
         for (let c = 1; c <= nCourts; c++) {
           const cKeys = state.oop.courts[String(c)] || [];
           const mKey = cKeys[r];
+          if (OopEngine.isBlankKey(mKey)) {
+            row.push((state.oop.blankLabels && state.oop.blankLabels[mKey]) || '空き（進行調整）');
+            continue;
+          }
           const m = mKey ? catalog.matchMap[mKey] : null;
           if (!m) {
             row.push('');
@@ -1622,7 +2040,7 @@
   function getPortalPreviewUrl() {
     const base = `${window.location.origin}${window.location.pathname}`;
     const tid = (opsUi.bundle && opsUi.bundle.id) || 'demo';
-    return `${base}#public?t=${encodeURIComponent(tid)}`;
+    return `${base}?public=${encodeURIComponent(tid)}`;
   }
 
   function updatePublishIndicator() {
@@ -1667,7 +2085,7 @@
   function getStaffEventUrl(eventId) {
     const base = `${window.location.origin}${window.location.pathname}`;
     const tid = (opsUi.bundle && opsUi.bundle.id) || 'demo';
-    return `${base}#staff?t=${encodeURIComponent(tid)}&e=${encodeURIComponent(eventId)}`;
+    return `${base}?staff=${encodeURIComponent(tid)}&e=${encodeURIComponent(eventId)}`;
   }
 
   function renderPublishModalContents() {
@@ -2002,6 +2420,9 @@
         </div>
       </div>
 
+      <!-- 運営者アナウンスバナー -->
+      ${renderAnnouncementBannersHtml(opsUi.bundle.announcement, oop.announcement, oop.venue || ev.venue)}
+
       <!-- 3タブナビゲーション -->
       <div class="bg-white border-b border-slate-200 grid grid-cols-3 shrink-0">
         <button onclick="setSpectatorTab('courts')"
@@ -2041,6 +2462,7 @@
     for (let c = 1; c <= nCourts; c++) {
       const cKey = String(c);
       const courtKeys = oop.courts[cKey] || [];
+      const realCourtTotal = courtKeys.filter((k) => !OopEngine.isBlankKey(k)).length;
       const live = OopEngine.getCourtLiveSlots(courtKeys, catalog.matchMap, oop.statuses);
 
       let statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">待機中</span>`;
@@ -2048,7 +2470,10 @@
         statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white">試合中</span>`;
       } else if (live.current && live.current.status === 'calling') {
         statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-white">コール中</span>`;
-      } else if (live.finished.length === courtKeys.length && courtKeys.length > 0) {
+      } else if (live.leadingBlankKey) {
+        const bLbl = (oop.blankLabels && oop.blankLabels[live.leadingBlankKey]) || '進行調整中';
+        statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900">${escapeHtml(bLbl)}</span>`;
+      } else if (live.finished.length === realCourtTotal && realCourtTotal > 0) {
         statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">全試合終了</span>`;
       }
 
@@ -2090,7 +2515,7 @@
           <div class="flex items-center justify-between">
             <span class="text-sm font-extrabold text-slate-900">コート ${c}</span>
             <div class="flex items-center gap-2">
-              <span class="text-[10px] text-slate-400 font-bold">${live.finished.length}/${courtKeys.length}完了</span>
+              <span class="text-[10px] text-slate-400 font-bold">${live.finished.length}/${realCourtTotal}完了</span>
               ${statusBadge}
             </div>
           </div>
@@ -2572,6 +2997,8 @@
         </div>
       </div>
 
+      ${renderAnnouncementBannersHtml(meta.announcement, oop.announcement, oop.venue || liveEvent.venue)}
+
       <div class="bg-white border-b border-slate-200 grid grid-cols-3 shrink-0 sticky top-0 z-10">
         <button onclick="setStandaloneSpectatorTab('courts')" class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'courts' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500'}">コート状況</button>
         <button onclick="setStandaloneSpectatorTab('bracket')" class="py-2.5 text-xs font-bold border-b-2 transition ${tab === 'bracket' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-slate-500'}">トーナメント表</button>
@@ -2686,6 +3113,333 @@
   window.handleOopCardDrop = handleOopCardDrop;
   window.autoAssignUnassignedMatches = autoAssignUnassignedMatches;
 
+  // =========================================================================
+  // 5c. 運営者リアルタイム・アナウンス機能
+  // =========================================================================
+  function renderAnnouncementBannersHtml(tourAnn, evAnn, venueName) {
+    const items = [];
+    if (tourAnn && String(tourAnn.text || '').trim()) {
+      items.push({ scope: '大会本部より', ann: tourAnn });
+    }
+    if (evAnn && String(evAnn.text || '').trim()) {
+      items.push({ scope: `${venueName || '会場'}より`, ann: evAnn });
+    }
+    if (!items.length) return '';
+
+    const styles = {
+      urgent: 'bg-rose-600 text-white border-rose-700',
+      warn: 'bg-amber-100 text-amber-950 border-amber-300',
+      info: 'bg-blue-50 text-blue-950 border-blue-200'
+    };
+    return `<div class="shrink-0 divide-y divide-black/10">${items.map(({ scope, ann }) => {
+      const cls = styles[ann.level] || styles.warn;
+      const tm = ann.updatedAt ? ann.updatedAt.slice(11, 16) : '';
+      return `<div class="px-3.5 py-2 border-b text-xs leading-snug ${cls}">
+        <div class="flex items-center justify-between gap-2 text-[10px] font-extrabold opacity-90 mb-0.5">
+          <span>📢 ${escapeHtml(scope)}</span>
+          ${tm ? `<span>${escapeHtml(tm)} 更新</span>` : ''}
+        </div>
+        <div class="font-bold whitespace-pre-wrap">${escapeHtml(ann.text)}</div>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
+  function openAnnouncementModal() {
+    const isStaff = window.BracketCloud && window.BracketCloud.isStaffMode();
+    const scopeRow = document.getElementById('announce-scope-row');
+    if (scopeRow) scopeRow.classList.toggle('hidden', Boolean(isStaff));
+    document.querySelectorAll('input[name="announce-scope"]').forEach((r) => {
+      r.checked = isStaff ? (r.value === 'event') : (r.value === 'tournament');
+    });
+    loadAnnouncementScopeDraft();
+    document.getElementById('announcement-modal')?.classList.remove('hidden');
+  }
+
+  function closeAnnouncementModal() {
+    document.getElementById('announcement-modal')?.classList.add('hidden');
+  }
+
+  function getSelectedAnnouncementScope() {
+    if (window.BracketCloud && window.BracketCloud.isStaffMode()) return 'event';
+    const r = document.querySelector('input[name="announce-scope"]:checked');
+    return r ? r.value : 'tournament';
+  }
+
+  function loadAnnouncementScopeDraft() {
+    const scope = getSelectedAnnouncementScope();
+    const current = scope === 'event'
+      ? (state.oop && state.oop.announcement)
+      : (opsUi.bundle && opsUi.bundle.announcement);
+    const ta = document.getElementById('announce-text-input');
+    if (ta) ta.value = (current && current.text) || '';
+    const lv = (current && current.level) || 'warn';
+    document.querySelectorAll('input[name="announce-level"]').forEach((r) => {
+      r.checked = (r.value === lv);
+    });
+  }
+
+  function applyAnnouncementPreset(level, text) {
+    document.querySelectorAll('input[name="announce-level"]').forEach((r) => {
+      r.checked = (r.value === level);
+    });
+    const ta = document.getElementById('announce-text-input');
+    if (ta) ta.value = text;
+  }
+
+  function saveAnnouncementFromModal() {
+    const scope = getSelectedAnnouncementScope();
+    const text = String(document.getElementById('announce-text-input')?.value || '').trim();
+    const checkedLv = document.querySelector('input[name="announce-level"]:checked');
+    const level = checkedLv ? checkedLv.value : 'warn';
+    const payload = text ? { text, level, updatedAt: new Date().toISOString() } : null;
+
+    if (scope === 'event') {
+      if (!state.oop) state.oop = OopEngine.createDefaultOopState();
+      state.oop.announcement = payload;
+      saveToLocalStorage();
+    } else if (opsUi.bundle) {
+      opsUi.bundle.announcement = payload;
+      saveBundleToLocalStorage();
+    }
+    if (window.BracketCloud && typeof window.BracketCloud.scheduleCloudSync === 'function') {
+      window.BracketCloud.scheduleCloudSync(true);
+    }
+    closeAnnouncementModal();
+    if (state.mainView === 'oop') renderOopView();
+    if (state.mainView === 'spectator') renderSpectatorView();
+    showToast(payload ? 'アナウンスを配信しました（公開画面へ即時反映）' : 'アナウンスを解除しました', 'success');
+  }
+
+  function clearAnnouncementFromModal() {
+    const ta = document.getElementById('announce-text-input');
+    if (ta) ta.value = '';
+    saveAnnouncementFromModal();
+  }
+
+  // =========================================================================
+  // 5d. 軽量「大会ホーム」ダッシュボード（A案）
+  // =========================================================================
+  function onEnterHomeView() {
+    renderHomeView();
+    if (window.BracketCloud && window.BracketCloud.isLoggedIn() && typeof window.BracketCloud.fetchMyTournaments === 'function') {
+      window.BracketCloud.fetchMyTournaments(false);
+    }
+  }
+
+  function setHomeSearchQuery(val) {
+    opsUi.homeSearchQuery = String(val || '');
+    renderHomeView();
+    const inp = document.getElementById('home-tourney-search');
+    if (inp) {
+      inp.focus();
+      inp.setSelectionRange(inp.value.length, inp.value.length);
+    }
+  }
+
+  function startSampleFromHome() {
+    if (typeof loadRealisticSampleData === 'function') {
+      loadRealisticSampleData(false);
+      generateTournamentFromEntries(false, false);
+    }
+    switchMainView('tournament');
+    showToast('サンプルデータでトーナメントを作成しました', 'success');
+  }
+
+  function openJsonImportFromHome() {
+    const inp = document.getElementById('json-import-input');
+    if (inp) inp.click();
+  }
+
+  function renderHomeView() {
+    const root = document.getElementById('home-dashboard-root');
+    if (!root || !opsUi.bundle) return;
+
+    const curEv = getActiveEvent();
+    if (curEv) curEv.data = captureActiveStateSnapshot();
+    const pub = opsUi.bundle.publish || { enabled: true };
+    const isLogged = Boolean(window.BracketCloud && window.BracketCloud.isLoggedIn());
+    const user = isLogged ? window.BracketCloud.getUser() : null;
+    const cloudList = isLogged ? window.BracketCloud.getMyTournaments() : [];
+    const q = opsUi.homeSearchQuery.trim().toLowerCase();
+    const filteredCloud = cloudList.filter((t) => {
+      if (!q) return true;
+      return `${t.name} ${(t.eventNames || []).join(' ')}`.toLowerCase().includes(q);
+    });
+
+    const eventsSummary = (opsUi.bundle.events || []).map((ev) => {
+      const cnt = (ev.data && Array.isArray(ev.data.entries)) ? ev.data.entries.length : 0;
+      return `${ev.name} (${cnt}組)`;
+    }).join(' ／ ');
+
+    const bottomHtml = isLogged ? `
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-5 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex items-center gap-2">
+            <h3 class="text-sm font-extrabold text-slate-900">マイ大会一覧（クラウド保存）</h3>
+            <span class="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 text-[11px] font-bold">${filteredCloud.length}件</span>
+            ${user ? `<span class="text-[11px] text-slate-400 hidden sm:inline">${escapeHtml(user.email || user.displayName || '')}</span>` : ''}
+          </div>
+          <div class="flex items-center gap-2">
+            <input id="home-tourney-search" type="text" value="${escapeHtml(opsUi.homeSearchQuery)}"
+                   oninput="setHomeSearchQuery(this.value)"
+                   placeholder="大会名・種目で検索..."
+                   class="px-3 py-1 text-xs font-bold border border-slate-300 rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:border-blue-500 w-44 sm:w-56" />
+            <button onclick="syncNowToCloud()" class="px-2.5 py-1 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg shadow-sm transition">今すぐ同期</button>
+          </div>
+        </div>
+
+        ${filteredCloud.length === 0 ? `
+          <div class="py-8 text-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-xl">
+            ${cloudList.length === 0 ? 'クラウド保存された大会はまだありません。右上の「今すぐ同期」で現在の大会を保存できます。' : '一致する大会がありません'}
+          </div>
+        ` : `
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+            ${filteredCloud.map((t) => {
+              const isCur = t.id === opsUi.bundle.id;
+              const dt = t.updatedAt ? t.updatedAt.replace('T', ' ').slice(0, 16) : '-';
+              return `
+                <div class="p-3 rounded-xl border ${isCur ? 'border-emerald-400 bg-emerald-50/40' : 'border-slate-200 bg-slate-50/70'} flex items-center justify-between gap-3">
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      <span class="text-xs font-extrabold text-slate-900 truncate">${escapeHtml(t.name)}</span>
+                      ${isCur ? `<span class="px-1.5 py-0.2 rounded bg-emerald-600 text-white text-[9px] font-bold">編集中</span>` : ''}
+                      <span class="px-1.5 py-0.2 rounded ${t.publishEnabled ? 'bg-blue-100 text-blue-800' : 'bg-slate-200 text-slate-600'} text-[9px] font-bold">${t.publishEnabled ? '公開中' : '非公開'}</span>
+                    </div>
+                    <div class="text-[11px] text-slate-600 truncate mt-0.5">${escapeHtml((t.eventNames || []).join(' / ') || '1種目')}</div>
+                    <div class="text-[10px] text-slate-400 mt-0.5">更新: ${escapeHtml(dt)}</div>
+                  </div>
+                  <div class="flex flex-col gap-1 shrink-0">
+                    ${!isCur ? `<button onclick="loadCloudTournament('${escapeJs(t.id)}')" class="px-3 py-1 text-[11px] font-bold bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition">開く</button>` : `<button onclick="switchMainView('oop')" class="px-3 py-1 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition">運営へ</button>`}
+                    <div class="flex gap-1">
+                      <button onclick="duplicateCloudTournament('${escapeJs(t.id)}')" class="flex-1 px-2 py-0.5 text-[10px] font-bold bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded">複製</button>
+                      <button onclick="deleteCloudTournament('${escapeJs(t.id)}', '${escapeJs(t.name)}')" class="px-2 py-0.5 text-[10px] font-bold bg-rose-50 hover:bg-rose-100 text-rose-700 rounded">削除</button>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `}
+      </div>
+    ` : `
+      <div class="grid grid-cols-1 md:grid-cols-12 gap-4">
+        <div class="md:col-span-5 bg-white rounded-2xl border border-blue-200 shadow-sm p-5 flex flex-col justify-between gap-3">
+          <div class="space-y-1.5">
+            <div class="text-xs font-extrabold text-blue-700">Google ログインで全機能が解放</div>
+            <p class="text-xs text-slate-600 leading-relaxed">
+              過去の大会をクラウド保存・呼び出しでき、生徒・保護者スマホへのQRリアルタイム速報や、別会場スタッフPIN同期も無料で使えます。
+            </p>
+          </div>
+          <button onclick="signInWithGoogle()"
+                  class="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow transition">
+            G Googleアカウントでログイン
+          </button>
+        </div>
+        <div class="md:col-span-7 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3">
+          <div class="text-xs font-extrabold text-slate-500">BracketFlow の使い方（3ステップ）</div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+            <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+              <div class="text-[10px] font-extrabold text-blue-600">STEP 1</div>
+              <div class="font-extrabold text-slate-900">名簿・自動抽選</div>
+              <div class="text-[11px] text-slate-500 leading-snug">Excel読込から4山・シード規則で自動配置＆微調整</div>
+            </div>
+            <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+              <div class="text-[10px] font-extrabold text-emerald-600">STEP 2</div>
+              <div class="font-extrabold text-slate-900">進行表・コート運営</div>
+              <div class="text-[11px] text-slate-500 leading-snug">T字ドラッグ＆空き枠で進行表を作成しリアルタイム管理</div>
+            </div>
+            <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+              <div class="text-[10px] font-extrabold text-rose-600">STEP 3</div>
+              <div class="font-extrabold text-slate-900">QR速報・アナウンス</div>
+              <div class="text-[11px] text-slate-500 leading-snug">生徒・保護者スマホへ自動更新配信＆雨天アナウンス</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    root.innerHTML = `
+      <div class="grid grid-cols-1 md:grid-cols-12 gap-4">
+        <!-- 続きから再開カード -->
+        <div class="md:col-span-8 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col justify-between gap-4">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="text-[11px] font-bold text-slate-500">最後に開いていた大会</span>
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${pub.enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}">${pub.enabled ? '公開設定 ON' : '非公開'}</span>
+              </div>
+              <h2 class="text-lg font-extrabold text-slate-900 truncate mt-0.5">${escapeHtml(opsUi.bundle.name || '大会')}</h2>
+              <div class="text-xs text-slate-600 mt-1">${escapeHtml(eventsSummary)}</div>
+            </div>
+            <button onclick="openPublishModal()"
+                    class="px-3 py-1.5 text-xs font-bold bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 rounded-lg shrink-0 transition">
+              公開設定・QR
+            </button>
+          </div>
+
+          <div class="grid grid-cols-3 gap-2">
+            <button onclick="switchMainView('registration')"
+                    class="py-2.5 px-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-300 text-xs font-extrabold text-slate-800 transition">
+              1. 名簿・設定
+            </button>
+            <button onclick="switchMainView('tournament')"
+                    class="py-2.5 px-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-300 text-xs font-extrabold text-slate-800 transition">
+              2. トーナメント表
+            </button>
+            <button onclick="switchMainView('oop')"
+                    class="py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-extrabold shadow-sm transition">
+              3. 進行表・運営 →
+            </button>
+          </div>
+        </div>
+
+        <!-- 新しく始めるカード -->
+        <div class="md:col-span-4 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col justify-between gap-2.5">
+          <div class="text-xs font-extrabold text-slate-500">新しく始める</div>
+          <button onclick="createNewCloudTournament()"
+                  class="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold shadow-sm transition">
+            ＋ 新しい大会を作成
+          </button>
+          <div class="grid grid-cols-2 gap-2">
+            <button onclick="openJsonImportFromHome()"
+                    class="py-2 px-2.5 rounded-xl border border-slate-300 bg-slate-50 hover:bg-slate-100 text-xs font-bold text-slate-700 transition">
+              JSON読込
+            </button>
+            <button onclick="startSampleFromHome()"
+                    class="py-2 px-2.5 rounded-xl border border-slate-300 bg-slate-50 hover:bg-slate-100 text-xs font-bold text-slate-700 transition">
+              サンプル開始
+            </button>
+          </div>
+        </div>
+      </div>
+
+      ${bottomHtml}
+    `;
+  }
+
+  window.onEnterHomeView = onEnterHomeView;
+  window.renderHomeView = renderHomeView;
+  window.setHomeSearchQuery = setHomeSearchQuery;
+  window.startSampleFromHome = startSampleFromHome;
+  window.openJsonImportFromHome = openJsonImportFromHome;
+
+  window.setOopSplitBlock = setOopSplitBlock;
+  window.toggleOopConflictsDrawer = toggleOopConflictsDrawer;
+  window.highlightOopCard = highlightOopCard;
+  window.jumpToOopCard = jumpToOopCard;
+  window.selectNewOopBlankForInsert = selectNewOopBlankForInsert;
+  window.editOopBlankLabel = editOopBlankLabel;
+  window.removeOopItem = removeOopItem;
+  window.alignOopQuarterfinals = alignOopQuarterfinals;
+  window.clearAllOopAssignments = clearAllOopAssignments;
+
+  window.openAnnouncementModal = openAnnouncementModal;
+  window.closeAnnouncementModal = closeAnnouncementModal;
+  window.loadAnnouncementScopeDraft = loadAnnouncementScopeDraft;
+  window.applyAnnouncementPreset = applyAnnouncementPreset;
+  window.saveAnnouncementFromModal = saveAnnouncementFromModal;
+  window.clearAnnouncementFromModal = clearAnnouncementFromModal;
+
   window.openUmpireModal = openUmpireModal;
   window.closeUmpireModal = closeUmpireModal;
   window.saveUmpireOverride = saveUmpireOverride;
@@ -2728,8 +3482,16 @@
   // 初期化（app.js の init 完了後に実行）
   initBundle();
 
-  // #public（パラメータ無しプレビュー）の場合のみローカル公開ビューへ遷移（?t=付きはfirebase-sync.jsが処理）
+  // 通常起動時は軽量「大会ホーム」を表示（?public= / ?staff= / #public / #staff は直接目的画面へ）
+  const launchParams = new URLSearchParams(window.location.search || '');
+  const isSpecialBoot = Boolean(
+    launchParams.get('public') ||
+    (launchParams.get('staff') && launchParams.get('e')) ||
+    (window.location.hash && (window.location.hash.startsWith('#public') || window.location.hash.startsWith('#staff')))
+  );
   if (window.location.hash === '#public') {
     switchMainView('spectator');
+  } else if (!isSpecialBoot) {
+    switchMainView('home');
   }
 })();

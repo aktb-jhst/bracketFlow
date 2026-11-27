@@ -17,12 +17,18 @@
     courtNames: [],
     assignMode: 'block',   // 'block' | 'round'
     umpireRule: 'loser',   // 'loser' | 'none'
-    viewStyle: 'board',    // 'board' | 'table'
-    courts: {},            // { "1": [matchKey, ...], ... }
+    viewStyle: 'board',    // 'board' | 'split' | 'table'
+    courts: {},            // { "1": [matchKey | "__blank_xxx", ...], ... }
     statuses: {},          // { [matchKey]: 'waiting' | 'calling' | 'playing' | 'finished' | 'wo' }
     umpires: {},           // { [matchKey]: 'カスタム審判メモ' }
+    blankLabels: {},       // { ["__blank_xxx"]: '空き（進行調整）' }
+    announcement: null,    // { text, level: 'info'|'warn'|'urgent', updatedAt }
     updatedAt: null
   };
+
+  function isBlankKey(key) {
+    return typeof key === 'string' && key.startsWith('__blank_');
+  }
 
   function createDefaultOopState(overrides) {
     return Object.assign(
@@ -33,6 +39,8 @@
         courts: {},
         statuses: {},
         umpires: {},
+        blankLabels: {},
+        announcement: null,
         updatedAt: new Date().toISOString()
       },
       overrides || {}
@@ -375,15 +383,19 @@
     const validMap = matchCatalog.matchMap || {};
     const validKeys = new Set(Object.keys(validMap));
 
-    // コート配列の正規化
+    // コート配列の正規化（意図的な空き枠 __blank_* も保持する）
     const cleanCourts = {};
     const assigned = new Set();
+    const keptBlanks = new Set();
     for (let c = 1; c <= nCourts; c++) {
       const cKey = String(c);
       const rawList = Array.isArray(next.courts[cKey]) ? next.courts[cKey] : [];
       cleanCourts[cKey] = [];
       rawList.forEach((mKey) => {
-        if (validKeys.has(mKey) && !assigned.has(mKey)) {
+        if (isBlankKey(mKey) && !keptBlanks.has(mKey)) {
+          cleanCourts[cKey].push(mKey);
+          keptBlanks.add(mKey);
+        } else if (validKeys.has(mKey) && !assigned.has(mKey)) {
           cleanCourts[cKey].push(mKey);
           assigned.add(mKey);
         }
@@ -406,6 +418,15 @@
       }
     });
     next.courts = cleanCourts;
+
+    // 空き枠ラベルの整理
+    const cleanBlankLabels = {};
+    keptBlanks.forEach((bKey) => {
+      if (next.blankLabels && next.blankLabels[bKey]) {
+        cleanBlankLabels[bKey] = String(next.blankLabels[bKey]).trim();
+      }
+    });
+    next.blankLabels = cleanBlankLabels;
 
     // ステータス同期
     const cleanStatuses = {};
@@ -430,11 +451,11 @@
     });
     next.umpires = cleanUmpires;
 
-    // 初回（どのコートにも1試合も割り当てられていない場合）は自動で初期進行表を生成
-    if (assigned.size === 0 && matchCatalog.matches.length > 0) {
+    // 初回（手動クリア直後フラグが無く、どのコートにも1試合も割り当てられていない場合）のみ自動で初期進行表を生成
+    if (assigned.size === 0 && keptBlanks.size === 0 && !next.manualEmpty && matchCatalog.matches.length > 0) {
       next.courts = generateCourtAssignments(matchCatalog.matches, nCourts, next.assignMode, next, false);
       assigned.clear();
-      Object.values(next.courts).forEach((list) => list.forEach((k) => assigned.add(k)));
+      Object.values(next.courts).forEach((list) => list.forEach((k) => { if (!isBlankKey(k)) assigned.add(k); }));
     }
 
     const unassigned = matchCatalog.matches
@@ -445,28 +466,41 @@
   }
 
   /**
-   * 審判割当メモを計算（手動上書き優先、未設定時は敗者審判ルールで自動生成）
+   * 審判割当メモを計算（手動上書き優先、未設定時は敗者審判ルールで自動生成。空き枠はスキップ）
    */
   function getUmpireLabel(courtMatchKeys, idxInCourt, matchMap, oop, labelFormatter) {
     const mKey = courtMatchKeys[idxInCourt];
+    if (isBlankKey(mKey)) return { text: '', isCustom: false };
     if (oop && oop.umpires && oop.umpires[mKey]) {
       return { text: oop.umpires[mKey], isCustom: true };
     }
     if (!oop || oop.umpireRule === 'none') {
       return { text: '', isCustom: false };
     }
-    // 敗者審判ルール
-    if (idxInCourt === 0) {
-      const nextKey = courtMatchKeys[1];
-      const nextM = nextKey ? matchMap[nextKey] : null;
+    // 直前の実試合を探す（空き枠をスキップ）
+    let prevM = null;
+    for (let i = idxInCourt - 1; i >= 0; i--) {
+      const k = courtMatchKeys[i];
+      if (!isBlankKey(k) && matchMap[k]) {
+        prevM = matchMap[k];
+        break;
+      }
+    }
+    // そのコートの最初の実試合
+    if (!prevM) {
+      let nextM = null;
+      for (let i = idxInCourt + 1; i < courtMatchKeys.length; i++) {
+        const k = courtMatchKeys[i];
+        if (!isBlankKey(k) && matchMap[k]) {
+          nextM = matchMap[k];
+          break;
+        }
+      }
       if (nextM) {
         return { text: `初期審判（${nextM.matchNo}待機ペア）`, isCustom: false };
       }
       return { text: '初期審判（本部指定）', isCustom: false };
     }
-    const prevKey = courtMatchKeys[idxInCourt - 1];
-    const prevM = prevKey ? matchMap[prevKey] : null;
-    if (!prevM) return { text: '前試合敗者', isCustom: false };
     if (prevM.isFinished && prevM.loserEntry) {
       const loserText = typeof labelFormatter === 'function'
         ? labelFormatter(prevM.loserEntry)
@@ -477,15 +511,22 @@
   }
 
   /**
-   * コート内の進行状況サマリー（現在試合中/コール中・ネクスト・オンデック）を取得
+   * コート内の進行状況サマリー（現在試合中/コール中・ネクスト・オンデック）を取得（空き枠除外）
    */
   function getCourtLiveSlots(courtMatchKeys, matchMap, statuses) {
     const keys = Array.isArray(courtMatchKeys) ? courtMatchKeys : [];
     let current = null;
     const upcoming = [];
     const finished = [];
+    let leadingBlankKey = null;
 
     keys.forEach((k, idx) => {
+      if (isBlankKey(k)) {
+        if (!current && upcoming.length === 0 && !leadingBlankKey) {
+          leadingBlankKey = k;
+        }
+        return;
+      }
       const m = matchMap[k];
       if (!m) return;
       const st = statuses[k] || 'waiting';
@@ -504,8 +545,138 @@
       next: upcoming[0] || null,
       onDeck: upcoming[1] || null,
       upcoming,
-      finished
+      finished,
+      leadingBlankKey
     };
+  }
+
+  /**
+   * 指定したラウンド（例：'準々決勝'・'準決勝'）の開始列を全コートで揃えるため、
+   * 必要なコートの直前に意図的な空き枠を自動挿入する
+   */
+  function alignRoundWithBlanks(oop, matchCatalog, targetRoundLabel, blankLabelText) {
+    const nextCourts = {};
+    const nextBlankLabels = Object.assign({}, (oop && oop.blankLabels) || {});
+    const courts = (oop && oop.courts) || {};
+    const matchMap = (matchCatalog && matchCatalog.matchMap) || {};
+
+    let maxStartCol = -1;
+    const courtFirstTargetIdx = {};
+    Object.keys(courts).forEach((cKey) => {
+      const list = Array.isArray(courts[cKey]) ? courts[cKey].slice() : [];
+      nextCourts[cKey] = list;
+      const idx = list.findIndex((k) => !isBlankKey(k) && matchMap[k] && matchMap[k].roundLabel === targetRoundLabel);
+      if (idx >= 0) {
+        courtFirstTargetIdx[cKey] = idx;
+        if (idx > maxStartCol) maxStartCol = idx;
+      }
+    });
+
+    // 全コートの中で対象ラウンドより前の試合が終わる最大列も考慮
+    Object.keys(nextCourts).forEach((cKey) => {
+      const list = nextCourts[cKey];
+      let lastEarlier = -1;
+      list.forEach((k, idx) => {
+        if (!isBlankKey(k) && matchMap[k]) {
+          const m = matchMap[k];
+          const targetSample = Object.values(matchMap).find((x) => x.roundLabel === targetRoundLabel);
+          if (targetSample && !m.isConsolation && m.round < targetSample.round) {
+            lastEarlier = idx;
+          }
+        }
+      });
+      if (lastEarlier + 1 > maxStartCol) maxStartCol = lastEarlier + 1;
+    });
+
+    let insertedCount = 0;
+    if (maxStartCol > 0) {
+      Object.keys(courtFirstTargetIdx).forEach((cKey) => {
+        const curIdx = courtFirstTargetIdx[cKey];
+        const diff = maxStartCol - curIdx;
+        for (let i = 0; i < diff; i++) {
+          const bKey = `__blank_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}_${insertedCount}`;
+          nextCourts[cKey].splice(curIdx, 0, bKey);
+          nextBlankLabels[bKey] = blankLabelText || `${targetRoundLabel}揃え待機`;
+          insertedCount++;
+        }
+      });
+    }
+
+    return { courts: nextCourts, blankLabels: nextBlankLabels, insertedCount, alignedColumn: maxStartCol + 1 };
+  }
+
+  /**
+   * 進行表の時系列矛盾を自動検知
+   * - 同一コート内での前試合・次試合の逆転
+   * - 別コート間での前試合より前または同時列（第N試合）への配置
+   * - 未終了の前試合が進行表に未配置のまま次戦だけ配置されている矛盾
+   */
+  function detectTimelineConflicts(oop, matchCatalog) {
+    const conflictMap = {};
+    const conflicts = [];
+    if (!oop || !oop.courts || !matchCatalog || !matchCatalog.matchMap) {
+      return { conflictMap, conflicts };
+    }
+
+    const posMap = {};
+    Object.keys(oop.courts).forEach((cKey) => {
+      const list = Array.isArray(oop.courts[cKey]) ? oop.courts[cKey] : [];
+      list.forEach((k, colIdx) => {
+        if (!isBlankKey(k)) {
+          posMap[k] = { courtKey: cKey, colIdx };
+        }
+      });
+    });
+
+    const addConflict = (matchObj, type, message, depMatch) => {
+      if (!conflictMap[matchObj.key]) conflictMap[matchObj.key] = [];
+      conflictMap[matchObj.key].push({ type, message, depKey: depMatch ? depMatch.key : null });
+      conflicts.push({
+        matchKey: matchObj.key,
+        matchNo: matchObj.matchNo,
+        roundLabel: matchObj.roundLabel,
+        courtKey: posMap[matchObj.key] ? posMap[matchObj.key].courtKey : null,
+        colIdx: posMap[matchObj.key] ? posMap[matchObj.key].colIdx : -1,
+        type,
+        message
+      });
+    };
+
+    Object.keys(posMap).forEach((mKey) => {
+      const m = matchCatalog.matchMap[mKey];
+      if (!m || m.isConsolation || m.isFinished) return;
+      const curPos = posMap[mKey];
+      const deps = [m.sourceKey0, m.sourceKey1].filter(Boolean);
+
+      deps.forEach((depKey) => {
+        const depM = matchCatalog.matchMap[depKey];
+        if (!depM || depM.isFinished) return; // すでに終了済みなら矛盾なし
+        const depPos = posMap[depKey];
+        if (!depPos) {
+          addConflict(m, 'unassigned_prev', `前試合 ${depM.matchNo} が進行表に未配置です`, depM);
+          return;
+        }
+        if (depPos.courtKey === curPos.courtKey) {
+          if (depPos.colIdx >= curPos.colIdx) {
+            addConflict(
+              m,
+              'same_court_order',
+              `同コートの ${depM.matchNo}（第${depPos.colIdx + 1}試合）より前に配置されています`,
+              depM
+            );
+          }
+        } else if (depPos.colIdx >= curPos.colIdx) {
+          addConflict(
+            m,
+            'cross_court_order',
+            `${depM.matchNo}（C${depPos.courtKey}・第${depPos.colIdx + 1}試合）より前または同時列です`,
+            depM
+          );
+        }
+      });
+    });
+
+    return { conflictMap, conflicts };
   }
 
   /**
@@ -547,6 +718,7 @@
 
   return {
     DEFAULT_OOP_STATE,
+    isBlankKey,
     createDefaultOopState,
     getRoundLabel,
     getMountainCode,
@@ -557,6 +729,8 @@
     reconcileOopState,
     getUmpireLabel,
     getCourtLiveSlots,
+    alignRoundWithBlanks,
+    detectTimelineConflicts,
     moveMatchInCourts
   };
 });
