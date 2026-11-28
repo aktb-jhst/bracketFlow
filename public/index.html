@@ -597,16 +597,13 @@
 
             <div class="h-4 w-px bg-slate-200 mx-0.5 hidden sm:block"></div>
 
-            <!-- 3モード切替（枠入替 / 塗りつぶし / 勝敗記録） -->
+            <!-- 2モード切替（枠入替 / 塗りつぶし） -->
             <div class="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
               <button id="btn-mode-edit" onclick="setAppMode('edit')" class="px-2.5 py-1 text-xs rounded-md font-bold bg-blue-600 text-white shadow-sm transition">
                 枠入替
               </button>
               <button id="btn-mode-paint" onclick="setAppMode('paint')" class="px-2.5 py-1 text-xs rounded-md font-bold text-slate-600 hover:text-slate-900 transition">
                 塗りつぶし
-              </button>
-              <button id="btn-mode-match" onclick="setAppMode('match')" class="px-2.5 py-1 text-xs rounded-md font-bold text-slate-600 hover:text-slate-900 transition">
-                勝敗記録
               </button>
             </div>
 
@@ -747,14 +744,6 @@
               枠入替に戻る
             </button>
           </div>
-        </div>
-
-        <!-- スコア記録モード案内バー -->
-        <div id="match-mode-bar" class="no-print hidden bg-rose-50 border-b border-rose-200 px-3 py-1.5 flex items-center justify-between text-xs text-rose-900 shrink-0">
-          <span class="font-semibold">
-            勝敗記録モード（<b id="match-mode-format-label">7ゲームマッチ</b>）：各試合の交点にある <b class="bg-rose-600 text-white px-1.5 py-0.2 rounded-full text-[10px]">✎</b> ボタンからゲーム数を入力してください。
-          </span>
-          <button onclick="setAppMode('edit')" class="text-[11px] font-bold text-rose-700 hover:underline">枠入替に戻る</button>
         </div>
 
         <!-- 通知・ルールチェック詳細ドロワー -->

@@ -2515,31 +2515,26 @@ function togglePrintFills(forceVal, notify = true) {
 }
 
 function setAppMode(mode) {
-  state.appMode = mode;
+  const safeMode = mode === 'paint' ? 'paint' : 'edit';
+  state.appMode = safeMode;
   state.selectedTarget = null;
   const btnEdit = document.getElementById('btn-mode-edit');
   const btnPaint = document.getElementById('btn-mode-paint');
-  const btnMatch = document.getElementById('btn-mode-match');
   const benchSidebar = document.getElementById('bench-sidebar');
   const paintBar = document.getElementById('paint-mode-bar');
-  const matchBar = document.getElementById('match-mode-bar');
 
   const inactiveCls = 'px-2.5 py-1 text-xs rounded font-bold text-slate-600 hover:text-slate-900 transition';
-  if (btnEdit) btnEdit.className = mode === 'edit' ? 'px-2.5 py-1 text-xs rounded font-bold bg-blue-600 text-white shadow-sm transition' : inactiveCls;
-  if (btnPaint) btnPaint.className = mode === 'paint' ? 'px-2.5 py-1 text-xs rounded font-bold bg-amber-500 text-slate-950 shadow-sm transition' : inactiveCls;
-  if (btnMatch) btnMatch.className = mode === 'match' ? 'px-2.5 py-1 text-xs rounded font-bold bg-rose-600 text-white shadow-sm transition' : inactiveCls;
+  if (btnEdit) btnEdit.className = safeMode === 'edit' ? 'px-2.5 py-1 text-xs rounded font-bold bg-blue-600 text-white shadow-sm transition' : inactiveCls;
+  if (btnPaint) btnPaint.className = safeMode === 'paint' ? 'px-2.5 py-1 text-xs rounded font-bold bg-amber-500 text-slate-950 shadow-sm transition' : inactiveCls;
 
-  document.body.classList.toggle('paint-mode-active', mode === 'paint');
-  paintBar?.classList.toggle('hidden', mode !== 'paint');
-  matchBar?.classList.toggle('hidden', mode !== 'match');
+  document.body.classList.toggle('paint-mode-active', safeMode === 'paint');
+  paintBar?.classList.toggle('hidden', safeMode !== 'paint');
 
   if (benchSidebar) {
-    if (mode === 'edit') benchSidebar.classList.toggle('collapsed', state.benchCollapsed);
+    if (safeMode === 'edit') benchSidebar.classList.toggle('collapsed', state.benchCollapsed);
     else benchSidebar.classList.add('collapsed');
   }
-  if (mode === 'paint') renderPaintPalette();
-  const fmtLbl = document.getElementById('match-mode-format-label');
-  if (fmtLbl) fmtLbl.textContent = `${state.matchFormat}ゲームマッチ`;
+  if (safeMode === 'paint') renderPaintPalette();
   updatePanelToggleButtons();
   renderBench();
   renderSheet();
@@ -2636,7 +2631,7 @@ function populateScoreGameSelects() {
 }
 
 function openScoreModal(matchKey, p1Name, p2Name, isConsolation = false, allowFromOop = false) {
-  if (state.appMode !== 'match' && !allowFromOop && state.mainView !== 'oop') return;
+  if (!allowFromOop && state.mainView !== 'oop') return;
   state.activeModalMatch = { matchKey, isConsolation };
   populateScoreGameSelects();
   document.getElementById('score-p1-name').textContent = p1Name || '未定';
@@ -2925,13 +2920,6 @@ function renderSingleBlockBracket(sheet, tree, size, totalRounds, rowHeight, lab
       if (res) {
         svgScoreTexts += `<text x="${xCurr - 9}" y="${y0 - 4}" text-anchor="middle" fill="#dc2626" font-size="11" font-weight="bold">${escapeHtml(res.g1)}</text>`;
         svgScoreTexts += `<text x="${xCurr - 9}" y="${y1 + 12}" text-anchor="middle" fill="#dc2626" font-size="11" font-weight="bold">${escapeHtml(res.g2)}</text>`;
-      }
-      if (state.appMode === 'match' && node.c0.entry && node.c1.entry) {
-        const n0 = formatPairLabel(node.c0.entry, true);
-        const n1 = formatPairLabel(node.c1.entry, true);
-        htmlLabels += `<button onclick="openScoreModal('${r}_${m}', '${escapeJs(n0)}', '${escapeJs(n1)}', false)"
-                               style="left:${xCurr - 10}px; top:${yMid - 10}px; width:20px; height:20px;"
-                               class="no-print absolute rounded-full bg-rose-600 text-white text-[10px] font-bold shadow flex items-center justify-center z-10">✎</button>`;
       }
     }
   }
@@ -3226,15 +3214,6 @@ function renderDualWingBracket(sheet, tree, size, totalRounds, rowHeight, labelW
           svgScoreTexts += `<text x="${xCurr + scoreOffsetX}" y="${y0 - 4}" text-anchor="middle" fill="#dc2626" font-size="11" font-weight="bold">${escapeHtml(res.g1)}</text>`;
           svgScoreTexts += `<text x="${xCurr + scoreOffsetX}" y="${y1 + 12}" text-anchor="middle" fill="#dc2626" font-size="11" font-weight="bold">${escapeHtml(res.g2)}</text>`;
         }
-
-        if (state.appMode === 'match' && node.c0.entry && node.c1.entry) {
-          const n0 = formatPairLabel(node.c0.entry, true);
-          const n1 = formatPairLabel(node.c1.entry, true);
-          htmlLabels += `<button onclick="openScoreModal('${r}_${m}', '${escapeJs(n0)}', '${escapeJs(n1)}', false)"
-                                 style="left:${xCurr - 10}px; top:${yMid - 10}px; width:20px; height:20px;"
-                                 class="no-print absolute rounded-full bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold shadow flex items-center justify-center z-10"
-                                 title="スコア入力">✎</button>`;
-        }
       }
     }
 
@@ -3275,15 +3254,6 @@ function renderDualWingBracket(sheet, tree, size, totalRounds, rowHeight, labelW
       <div class="text-[11px] font-bold text-rose-900 truncate">${winNames}</div>
       <div class="text-[10px] font-semibold text-rose-700">（${winSchool}）</div>
     </div>`;
-  }
-
-  if (state.appMode === 'match' && finalNode.c0.entry && finalNode.c1.entry) {
-    const n0 = formatPairLabel(finalNode.c0.entry, true);
-    const n1 = formatPairLabel(finalNode.c1.entry, true);
-    htmlLabels += `<button onclick="openScoreModal('${totalRounds}_0', '${escapeJs(n0)}', '${escapeJs(n1)}', false)"
-                           style="left:${cx - 11}px; top:${targetFinalY - 11}px; width:22px; height:22px;"
-                           class="no-print absolute rounded-full bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold shadow flex items-center justify-center z-10"
-                           title="決勝スコア入力">✎</button>`;
   }
 
   const consolationHtml = renderConsolationSectionHtml(totalWidth);
@@ -3413,13 +3383,6 @@ function renderSingleSideBracket(sheet, tree, size, totalRounds, rowHeight, labe
         svgScoreTexts += `<text x="${xCurr - 9}" y="${y0 - 4}" text-anchor="middle" fill="#dc2626" font-size="11" font-weight="bold">${escapeHtml(res.g1)}</text>`;
         svgScoreTexts += `<text x="${xCurr - 9}" y="${y1 + 12}" text-anchor="middle" fill="#dc2626" font-size="11" font-weight="bold">${escapeHtml(res.g2)}</text>`;
       }
-      if (state.appMode === 'match' && node.c0.entry && node.c1.entry) {
-        const n0 = formatPairLabel(node.c0.entry, true);
-        const n1 = formatPairLabel(node.c1.entry, true);
-        htmlLabels += `<button onclick="openScoreModal('${r}_${m}', '${escapeJs(n0)}', '${escapeJs(n1)}', false)"
-                               style="left:${xCurr - 10}px; top:${yMid - 10}px; width:20px; height:20px;"
-                               class="no-print absolute rounded-full bg-rose-600 text-white text-[10px] font-bold shadow flex items-center justify-center z-10">✎</button>`;
-      }
     }
   }
 
@@ -3471,9 +3434,6 @@ function renderConsolationSectionHtml(totalWidth) {
           ${res ? `<span class="font-bold text-rose-600">${escapeHtml(res.g2)}</span>` : ''}
         </div>
       </div>
-      ${state.appMode === 'match'
-        ? `<button onclick="openScoreModal('${m}', '${escapeJs(p1)}', '${escapeJs(p2)}', true)" class="no-print px-2 py-1 bg-rose-600 text-white text-[10px] font-bold rounded shrink-0">結果入力</button>`
-        : ''}
     </div>`;
   }
 
