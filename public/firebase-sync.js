@@ -14,14 +14,24 @@
     isStaffMode: false,
     staffSession: null,     // { tid, evId, docId, pinVersion, venue, eventName, tournamentName }
     isPublicStandalone: false,
+    isUmpireStandalone: false,
     publicTid: null,
     publicMeta: null,
     publicMetaUnsub: null,
     publicEventUnsub: null,
     publicCurrentEventId: null,
     publicLastEventObj: null,
+    umpireTid: null,
+    umpireMeta: null,
+    umpireMetaUnsub: null,
+    umpireEventUnsub: null,
+    umpireCurrentEventId: null,
+    umpireLastEventObj: null,
     adminLiveUnsub: null,
     adminLiveDocId: null,
+    reportsUnsub: null,
+    reportsDocId: null,
+    pendingReports: [],
     suppressRemoteEcho: false,
     syncTimer: null,
     lastSyncedAt: null,
@@ -248,7 +258,8 @@
       const uid = cloud.user.uid;
       const tid = bundle.id;
       const nowIso = new Date().toISOString();
-      const pub = bundle.publish || { enabled: true, passcode: '', nameDisplayMode: 'full' };
+      const pub = bundle.publish || { enabled: true, passcode: '', nameDisplayMode: 'full', umpireReportEnabled: true };
+      const umpireReportEnabled = pub.umpireReportEnabled !== false;
       const passcodeHash = pub.passcode ? await sha256Hex(`${tid}:${pub.passcode}`) : '';
 
       const batch = cloud.db.batch();
@@ -273,6 +284,7 @@
         ownerUid: uid,
         name: bundle.name || '大会',
         publishEnabled: Boolean(pub.enabled),
+        umpireReportEnabled,
         passcodeHash,
         hasPasscode: Boolean(pub.passcode),
         nameDisplayMode: pub.nameDisplayMode || 'full',
@@ -311,6 +323,7 @@
           consolation: evData.consolation || { preset: 'none', title: '順位決定戦', matchCount: 0, slots: [], results: {} },
           oop: evData.oop || OopEngine.createDefaultOopState(),
           publishEnabled: Boolean(pub.enabled),
+          umpireReportEnabled,
           pinVersion,
           updatedAt: nowIso
         });
@@ -364,13 +377,66 @@
       cloud.adminLiveUnsub = null;
       cloud.adminLiveDocId = null;
     }
+    detachMatchReportsListener();
+  }
+
+  function detachMatchReportsListener() {
+    if (cloud.reportsUnsub) {
+      cloud.reportsUnsub();
+      cloud.reportsUnsub = null;
+      cloud.reportsDocId = null;
+    }
+    cloud.pendingReports = [];
+    if (typeof window.onPendingReportsChanged === 'function') {
+      window.onPendingReportsChanged([]);
+    }
+  }
+
+  function attachMatchReportsListener(docId) {
+    if (!cloud.initialized || !docId) return;
+    if (cloud.reportsDocId === docId && cloud.reportsUnsub) return;
+    detachMatchReportsListener();
+    cloud.reportsDocId = docId;
+    cloud.reportsUnsub = cloud.db.collection('live_events').doc(docId)
+      .collection('match_reports')
+      .where('status', '==', 'pending')
+      .onSnapshot((snap) => {
+        const list = [];
+        snap.forEach((doc) => {
+          list.push(Object.assign({ id: doc.id, docId }, doc.data()));
+        });
+        list.sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+        cloud.pendingReports = list;
+        if (typeof window.onPendingReportsChanged === 'function') {
+          window.onPendingReportsChanged(list);
+        }
+      }, () => {
+        // 権限未同期時などは静かに無視
+      });
+  }
+
+  async function resolveMatchReport(docId, reportId, status) {
+    if (!cloud.initialized || !docId || !reportId) return false;
+    try {
+      await cloud.db.collection('live_events').doc(docId)
+        .collection('match_reports').doc(reportId)
+        .update({
+          status: status === 'rejected' ? 'rejected' : 'approved',
+          resolvedAt: new Date().toISOString()
+        });
+      return true;
+    } catch (err) {
+      showToast('報告ステータスの更新に失敗しました: ' + (err.message || err), 'error');
+      return false;
+    }
   }
 
   function attachAdminLiveListener() {
-    if (!cloud.initialized || !cloud.user || cloud.isPublicStandalone || cloud.isStaffMode) return;
+    if (!cloud.initialized || !cloud.user || cloud.isPublicStandalone || cloud.isUmpireStandalone || cloud.isStaffMode) return;
     const bundle = typeof window.getCurrentTournamentBundle === 'function' ? window.getCurrentTournamentBundle() : null;
     if (!bundle || !bundle.id || !bundle.activeEventId) return;
     const docId = `${bundle.id}__${bundle.activeEventId}`;
+    attachMatchReportsListener(docId);
     if (cloud.adminLiveDocId === docId && cloud.adminLiveUnsub) return;
 
     detachAdminLiveListener();
@@ -787,6 +853,7 @@
 
     // リアルタイム購読で初回ロード＆他スタッフ変更を即時同期
     if (cloud.adminLiveUnsub) cloud.adminLiveUnsub();
+    attachMatchReportsListener(docId);
     cloud.adminLiveUnsub = cloud.db.collection('live_events').doc(docId).onSnapshot((snap) => {
       if (!snap.exists) return;
       const d = snap.data();
@@ -832,12 +899,148 @@
     }
   }
 
-  // URLクエリ・ハッシュ解析（?public=<tid> / ?staff=<tid>&e=<evId> および旧 #public?t= / #staff?t= 両対応）
+  // =========================================================================
+  // 5b. 審判専用ページモード（?umpire=<tid> / #umpire?t=<tid>：結果報告専用）
+  // =========================================================================
+  async function startUmpireStandaloneMode(tid) {
+    cloud.isUmpireStandalone = true;
+    cloud.umpireTid = tid;
+    document.documentElement.classList.add('standalone-umpire-boot');
+
+    const umpView = document.getElementById('view-umpire');
+    if (umpView) umpView.classList.remove('hidden');
+
+    const frame = document.getElementById('umpire-portal-frame');
+    if (frame) {
+      frame.innerHTML = `<div class="p-10 text-center text-xs font-bold text-slate-500">審判専用ページを読み込んでいます...</div>`;
+    }
+
+    if (!cloud.initialized && !initFirebase()) {
+      if (frame) frame.innerHTML = `<div class="p-10 text-center text-xs text-rose-700 font-bold">通信エラー：Firebase へ接続できませんでした。</div>`;
+      return;
+    }
+
+    // 匿名認証を事前確保（報告送信のFirestoreルール通過用・ログイン操作不要）
+    try {
+      if (!cloud.auth.currentUser) {
+        await cloud.auth.signInAnonymously();
+      }
+    } catch (_) {
+      // 送信時に再試行
+    }
+
+    if (cloud.umpireMetaUnsub) cloud.umpireMetaUnsub();
+    cloud.umpireMetaUnsub = cloud.db.collection('live_tournaments').doc(tid).onSnapshot((metaSnap) => {
+      if (!metaSnap.exists) {
+        if (frame) {
+          frame.innerHTML = `<div class="p-10 text-center space-y-2"><div class="text-sm font-extrabold text-slate-800">大会ページが見つかりません</div><div class="text-xs text-slate-500">URLをご確認いただくか、大会本部がクラウド保存を完了するまでお待ちください。</div></div>`;
+        }
+        return;
+      }
+      cloud.umpireMeta = metaSnap.data();
+      if (!cloud.umpireMeta.umpireReportEnabled) {
+        if (cloud.umpireEventUnsub) { cloud.umpireEventUnsub(); cloud.umpireEventUnsub = null; }
+        if (frame) {
+          frame.innerHTML = `<div class="p-10 text-center space-y-2"><div class="text-2xl">🔒</div><div class="text-sm font-extrabold text-slate-800">${escapeHtml(cloud.umpireMeta.name)}</div><div class="text-xs text-slate-500">現在、審判端末からの試合結果報告機能はOFFに設定されています。<br/>大会本部へ直接ご報告ください。</div></div>`;
+        }
+        return;
+      }
+      const events = cloud.umpireMeta.events || [];
+      const stillExists = events.some((e) => e.id === cloud.umpireCurrentEventId);
+      const targetEvId = stillExists ? cloud.umpireCurrentEventId : (events[0] && events[0].id);
+      if (targetEvId && targetEvId !== cloud.umpireCurrentEventId) {
+        subscribeUmpireEvent(tid, targetEvId);
+      } else if (cloud.umpireLastEventObj && typeof window.renderStandaloneUmpirePortal === 'function') {
+        window.renderStandaloneUmpirePortal(cloud.umpireMeta, cloud.umpireLastEventObj);
+      }
+    }, (err) => {
+      if (frame) {
+        frame.innerHTML = `<div class="p-10 text-center space-y-2"><div class="text-sm font-extrabold text-rose-700">現在アクセスできません</div><div class="text-xs text-slate-500">${escapeHtml(err.code === 'permission-denied' ? '現在、審判報告機能はOFFに設定されています' : (err.message || ''))}</div></div>`;
+      }
+    });
+  }
+
+  function subscribeUmpireEvent(tid, evId) {
+    cloud.umpireCurrentEventId = evId;
+    if (cloud.umpireEventUnsub) {
+      cloud.umpireEventUnsub();
+      cloud.umpireEventUnsub = null;
+    }
+    const docId = `${tid}__${evId}`;
+    cloud.umpireEventUnsub = cloud.db.collection('live_events').doc(docId).onSnapshot((snap) => {
+      if (!snap.exists || !cloud.umpireMeta) return;
+      const d = snap.data();
+      const liveEventObj = {
+        id: d.evId || evId,
+        docId,
+        name: d.name || '種目',
+        venue: d.venue || '第1会場',
+        updatedAt: d.updatedAt || '',
+        data: {
+          title: d.name || '',
+          matchFormat: d.matchFormat || 7,
+          bracketSize: d.bracketSize || 16,
+          slots: JSON.parse(d.slotsJson || '[]'),
+          entries: JSON.parse(d.entriesJson || '[]'),
+          activeSlotMask: d.activeSlotMask || [],
+          schoolAliases: d.schoolAliases || {},
+          results: d.results || {},
+          consolation: d.consolation || null,
+          oop: d.oop || OopEngine.createDefaultOopState()
+        }
+      };
+      cloud.umpireLastEventObj = liveEventObj;
+      if (typeof window.renderStandaloneUmpirePortal === 'function') {
+        window.renderStandaloneUmpirePortal(cloud.umpireMeta, liveEventObj);
+      }
+    });
+  }
+
+  async function submitUmpireMatchReport(tid, evId, report) {
+    if (!cloud.initialized) return { ok: false, error: 'クラウド未接続' };
+    try {
+      if (!cloud.auth.currentUser) {
+        await cloud.auth.signInAnonymously();
+      }
+      const docId = `${tid}__${evId}`;
+      const payload = {
+        status: 'pending',
+        tid,
+        evId,
+        docId,
+        court: String(report.court || ''),
+        matchKey: String(report.matchKey || ''),
+        matchNo: String(report.matchNo || ''),
+        roundLabel: String(report.roundLabel || ''),
+        isConsolation: Boolean(report.isConsolation),
+        p1Label: String(report.p1Label || ''),
+        p2Label: String(report.p2Label || ''),
+        g1: Number(report.g1),
+        g2: Number(report.g2),
+        winner: Number(report.winner),
+        wo: Boolean(report.wo),
+        umpireChecked: Boolean(report.umpireChecked),
+        winnerChecked: Boolean(report.winnerChecked),
+        createdAt: new Date().toISOString()
+      };
+      await cloud.db.collection('live_events').doc(docId).collection('match_reports').add(payload);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err && err.message ? err.message : String(err) };
+    }
+  }
+
+  // URLクエリ・ハッシュ解析（?public=<tid> / ?umpire=<tid> / ?staff=<tid>&e=<evId> および旧ハッシュ両対応）
   function checkSpecialLaunchHash() {
     const searchParams = new URLSearchParams(window.location.search || '');
     const qPub = searchParams.get('public');
     if (qPub) {
       startPublicStandaloneMode(qPub);
+      return true;
+    }
+    const qUmp = searchParams.get('umpire');
+    if (qUmp) {
+      startUmpireStandaloneMode(qUmp);
       return true;
     }
     const qStaff = searchParams.get('staff');
@@ -854,6 +1057,15 @@
       const tid = params.get('t');
       if (tid) {
         startPublicStandaloneMode(tid);
+        return true;
+      }
+    }
+    if (hash.startsWith('#umpire')) {
+      const qIdx = hash.indexOf('?');
+      const params = new URLSearchParams(qIdx >= 0 ? hash.slice(qIdx + 1) : '');
+      const tid = params.get('t');
+      if (tid) {
+        startUmpireStandaloneMode(tid);
         return true;
       }
     }
@@ -876,14 +1088,19 @@
     isSynced: () => Boolean(cloud.user && cloud.lastSyncedAt),
     isStaffMode: () => Boolean(cloud.isStaffMode),
     isPublicStandalone: () => Boolean(cloud.isPublicStandalone),
+    isUmpireStandalone: () => Boolean(cloud.isUmpireStandalone),
     getUser: () => cloud.user,
     getMyTournaments: () => cloud.myTournaments.slice(),
+    getPendingReports: () => cloud.pendingReports.slice(),
     fetchMyTournaments,
     scheduleCloudSync,
     syncActiveBundleToCloud,
     deleteStaffKeyFromCloud,
     attachAdminLiveListener,
-    subscribePublicEvent
+    subscribePublicEvent,
+    subscribeUmpireEvent,
+    submitUmpireMatchReport,
+    resolveMatchReport
   };
 
   window.signInWithGoogle = signInWithGoogle;

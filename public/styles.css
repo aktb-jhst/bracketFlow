@@ -112,6 +112,37 @@ html.standalone-public-boot #view-spectator {
   min-height: 0 !important;
   z-index: 40 !important;
 }
+html.standalone-umpire-boot header,
+html.standalone-umpire-boot #event-switcher-bar,
+html.standalone-umpire-boot #view-home,
+html.standalone-umpire-boot #view-registration,
+html.standalone-umpire-boot #view-tournament,
+html.standalone-umpire-boot #view-oop,
+html.standalone-umpire-boot #view-spectator,
+html.standalone-umpire-boot #umpire-preview-bar {
+  display: none !important;
+}
+html.standalone-umpire-boot,
+html.standalone-umpire-boot body {
+  height: 100vh !important;
+  height: 100dvh !important;
+  overflow: hidden !important;
+}
+html.standalone-umpire-boot #view-umpire {
+  display: flex !important;
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  z-index: 40 !important;
+}
+html.standalone-umpire-boot #umpire-portal-frame {
+  max-width: 100% !important;
+  max-height: none !important;
+  border-radius: 0 !important;
+  border: 0 !important;
+}
 .spectator-standalone-header {
   padding-top: max(8px, env(safe-area-inset-top));
 }
@@ -394,6 +425,66 @@ body.pdf-capturing.print-hide-fills .slot-custom-fill {
     width: 100% !important;
     padding: 2mm !important;
     margin: 0 !important;
+  }
+
+  /* QR専用印刷モード（1in1 / 2in1 / 4in1 / 8in1 面付けA4出力） */
+  body.printing-qr #app-shell,
+  body.printing-qr header,
+  body.printing-qr #event-switcher-bar {
+    display: none !important;
+  }
+  body.printing-qr #qr-print-sheet {
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    background: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .qr-print-page {
+    display: grid;
+    width: 100%;
+    height: 277mm;
+    box-sizing: border-box;
+    page-break-after: always;
+    break-after: page;
+  }
+  .qr-print-page:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+  .qr-print-page.layout-1in1 {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+    gap: 0;
+  }
+  .qr-print-page.layout-2in1 {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 4mm;
+  }
+  .qr-print-page.layout-4in1 {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 4mm;
+  }
+  .qr-print-page.layout-8in1 {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: repeat(4, 1fr);
+    gap: 3mm;
+  }
+  .qr-print-card {
+    border: 1.2pt dashed #94a3b8;
+    border-radius: 6px;
+    padding: 4mm;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    overflow: hidden;
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
 }
 

@@ -16,19 +16,23 @@ service cloud.firestore {
       allow update, delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
     }
 
-    // 2. 公開ポータル用メタ情報（生徒・保護者閲覧用：1大会=1ドキュメント）
+    // 2. 公開ポータル用メタ情報（生徒・保護者閲覧用 ＆ 審判報告用：1大会=1ドキュメント）
     match /live_tournaments/{tid} {
-      allow read: if resource.data.publishEnabled == true || isOwner(resource.data.ownerUid);
+      allow read: if resource.data.publishEnabled == true
+        || resource.data.umpireReportEnabled == true
+        || isOwner(resource.data.ownerUid);
       allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
       allow update, delete: if isOwner(resource.data.ownerUid);
     }
 
     // 3. 公開ライブ種目ドキュメント（1種目=1ドキュメント・Spark無料枠最適化）
-    //    - 生徒・保護者：publishEnabled==true のとき閲覧のみ可（名字設定時は事前マスク済データを格納）
+    //    - 生徒・保護者 / 審判：publishEnabled==true または umpireReportEnabled==true のとき閲覧のみ可
     //    - 大会管理者：フル権限
     //    - 会場スタッフ：staff_sessions でPIN認証済みの端末のみ results/consolation/oop/updatedAt の更新可
     match /live_events/{docId} {
-      allow read: if resource.data.publishEnabled == true || isOwner(resource.data.ownerUid);
+      allow read: if resource.data.publishEnabled == true
+        || resource.data.umpireReportEnabled == true
+        || isOwner(resource.data.ownerUid);
       allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
       allow delete: if isOwner(resource.data.ownerUid);
       allow update: if isOwner(resource.data.ownerUid)
@@ -49,6 +53,26 @@ service cloud.firestore {
           && exists(/databases/$(database)/documents/staff_keys/$(docId + '__' + request.resource.data.pin))
           && request.resource.data.pinVersion == get(/databases/$(database)/documents/live_events/$(docId)).data.pinVersion;
         allow delete: if isSignedIn() && request.auth.uid == uid;
+      }
+
+      // 審判専用ページからの結果報告（案A：2重確認必須 → 本部・スタッフ承認待ちキュー）
+      match /match_reports/{reportId} {
+        allow read, update, delete: if isOwner(get(/databases/$(database)/documents/live_events/$(docId)).data.ownerUid)
+          || (
+            isSignedIn()
+            && exists(/databases/$(database)/documents/live_events/$(docId)/staff_sessions/$(request.auth.uid))
+            && get(/databases/$(database)/documents/live_events/$(docId)/staff_sessions/$(request.auth.uid)).data.pinVersion
+               == get(/databases/$(database)/documents/live_events/$(docId)).data.pinVersion
+          );
+        allow create: if isSignedIn()
+          && get(/databases/$(database)/documents/live_events/$(docId)).data.umpireReportEnabled == true
+          && request.resource.data.status == 'pending'
+          && request.resource.data.umpireChecked == true
+          && request.resource.data.winnerChecked == true
+          && request.resource.data.matchKey is string
+          && request.resource.data.g1 is int
+          && request.resource.data.g2 is int
+          && request.resource.data.winner in [0, 1];
       }
     }
 

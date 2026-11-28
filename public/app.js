@@ -633,6 +633,7 @@ function switchMainView(view) {
   const tourneyView = document.getElementById('view-tournament');
   const oopView = document.getElementById('view-oop');
   const spectatorView = document.getElementById('view-spectator');
+  const umpireView = document.getElementById('view-umpire');
   const eventBar = document.getElementById('event-switcher-bar');
 
   const tabHome = document.getElementById('main-tab-home');
@@ -646,7 +647,7 @@ function switchMainView(view) {
   const activeSpecCls = 'px-2 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold rounded-md bg-emerald-600 text-white shadow transition flex items-center gap-1 whitespace-nowrap';
   const idleSpecCls = 'px-2 sm:px-2.5 py-1 text-[11px] sm:text-xs font-bold rounded-md text-emerald-300 hover:text-white transition flex items-center gap-1 whitespace-nowrap';
 
-  [homeView, regView, tourneyView, oopView, spectatorView].forEach((el) => {
+  [homeView, regView, tourneyView, oopView, spectatorView, umpireView].forEach((el) => {
     if (el) el.classList.add('hidden');
   });
   if (tabHome) {
@@ -658,7 +659,7 @@ function switchMainView(view) {
   if (tabTourney) tabTourney.className = (view === 'tournament') ? activeCls : idleCls;
   if (tabOop) tabOop.className = (view === 'oop') ? activeCls : idleCls;
   if (tabSpectator) tabSpectator.className = (view === 'spectator') ? activeSpecCls : idleSpecCls;
-  if (eventBar) eventBar.classList.toggle('hidden', view === 'spectator' || view === 'home');
+  if (eventBar) eventBar.classList.toggle('hidden', view === 'spectator' || view === 'home' || view === 'umpire');
 
   const ensureBracketReady = () => {
     if (state.slots.length === 0) {
@@ -702,6 +703,10 @@ function switchMainView(view) {
     if (spectatorView) spectatorView.classList.remove('hidden');
     ensureBracketReady();
     if (typeof window.onEnterSpectatorView === 'function') window.onEnterSpectatorView();
+  } else if (view === 'umpire') {
+    if (umpireView) umpireView.classList.remove('hidden');
+    ensureBracketReady();
+    if (typeof window.onEnterUmpireView === 'function') window.onEnterUmpireView();
   }
 }
 

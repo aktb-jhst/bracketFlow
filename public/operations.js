@@ -26,8 +26,28 @@
     oopUndoStack: [],         // 進行表のコート移動・再配分Undoスタック
     oopFinishedCollapsed: {}, // { [courtKey]: boolean }
     standalonePublic: null,   // { meta, liveEvent, verifyPasscodeFn, unlocked }
+    standaloneUmpire: null,   // { meta, liveEvent }
+    qrPrintLayout: '4in1',    // '1in1' | '2in1' | '4in1' | '8in1'
+    publishStaffEventId: null,
+    pendingReports: [],       // クラウド承認待ち報告リスト
+    localPreviewReports: [],  // 未ログインプレビュー体験用のローカル報告リスト
+    editingReportId: null,
     umpireModalMatchKey: null,
     eventModalMode: 'add',    // 'add' | 'edit'
+    umpirePortal: {
+      eventId: null,
+      step: 1,                // 1: コート選択, 2: 対戦確認, 3: スコア＆2重チェック
+      courtKey: null,
+      matchKey: null,
+      g1: 4,
+      g2: 0,
+      wo: false,
+      woWinner: 0,
+      umpireChecked: false,
+      winnerChecked: false,
+      submitting: false,
+      sentSummary: null
+    },
     spectator: {
       frameMode: 'mobile',    // 'mobile' | 'full'
       tab: 'courts',          // 'courts' | 'bracket' | 'search'
@@ -244,7 +264,9 @@
         if (parsed && Array.isArray(parsed.events) && parsed.events.length > 0) {
           opsUi.bundle = parsed;
           if (!opsUi.bundle.publish) {
-            opsUi.bundle.publish = { enabled: true, passcode: '', nameDisplayMode: 'full' };
+            opsUi.bundle.publish = { enabled: true, passcode: '', nameDisplayMode: 'full', umpireReportEnabled: true };
+          } else if (typeof opsUi.bundle.publish.umpireReportEnabled === 'undefined') {
+            opsUi.bundle.publish.umpireReportEnabled = true;
           }
           opsUi.bundle.events.forEach((ev, idx) => {
             if (!ev.staffPin) ev.staffPin = generateStaffPin();
@@ -633,6 +655,7 @@
     updateOopHeaderBadge();
     renderEventSwitcherBar();
 
+    renderOopPendingReportsBar();
     // ツールバー値の同期
     const venueInput = document.getElementById('oop-venue-input');
     if (venueInput && document.activeElement !== venueInput) {
@@ -2221,71 +2244,131 @@
     }
   }
 
+  function getUmpirePortalUrl() {
+    const base = `${window.location.origin}${window.location.pathname}`;
+    const tid = (opsUi.bundle && opsUi.bundle.id) || 'demo';
+    return `${base}?umpire=${encodeURIComponent(tid)}`;
+  }
+
   function getStaffEventUrl(eventId) {
     const base = `${window.location.origin}${window.location.pathname}`;
     const tid = (opsUi.bundle && opsUi.bundle.id) || 'demo';
     return `${base}?staff=${encodeURIComponent(tid)}&e=${encodeURIComponent(eventId)}`;
   }
 
+  function buildQrSvgMarkup(urlStr, sizePx) {
+    if (typeof qrcode !== 'function') {
+      return `<div class="text-[11px] text-slate-500 p-2 text-center">オフライン環境のため<br/>QRはオンライン時に生成されます</div>`;
+    }
+    try {
+      const qr = qrcode(0, 'M');
+      qr.addData(urlStr);
+      qr.make();
+      const raw = qr.createSvgTag({ cellSize: 4, margin: 2 });
+      return raw.replace('<svg ', `<svg style="width:${sizePx}px;height:${sizePx}px;max-width:100%;max-height:100%;" `);
+    } catch (_) {
+      return `<div class="text-[11px] text-slate-400 p-2">QR生成エラー</div>`;
+    }
+  }
+
   function renderPublishModalContents() {
     if (!opsUi.bundle) return;
     refreshPublishCloudBanner();
-    const pub = opsUi.bundle.publish;
+    const pub = opsUi.bundle.publish || { enabled: true, passcode: '', nameDisplayMode: 'full', umpireReportEnabled: true };
+    const umpireOn = pub.umpireReportEnabled !== false;
+
+    // 1. 閲覧用QR設定
     const chk = document.getElementById('pub-enabled-checkbox');
     const txt = document.getElementById('pub-enabled-text');
+    const cardArea = document.getElementById('pub-qr-card-area');
     const passInput = document.getElementById('pub-passcode-input');
     if (chk) chk.checked = Boolean(pub.enabled);
     if (txt) {
-      txt.textContent = pub.enabled ? '公開中' : '非公開';
-      txt.className = pub.enabled ? 'ml-1.5 text-xs font-bold text-emerald-700' : 'ml-1.5 text-xs font-bold text-slate-500';
+      txt.textContent = pub.enabled ? '公開ON' : '非公開';
+      txt.className = pub.enabled ? 'ml-1 text-[11px] font-extrabold text-emerald-700' : 'ml-1 text-[11px] font-extrabold text-slate-500';
     }
+    if (cardArea) cardArea.style.opacity = pub.enabled ? '1' : '0.45';
     if (passInput && document.activeElement !== passInput) passInput.value = pub.passcode || '';
     document.querySelectorAll('input[name="pub-name-mode"]').forEach((r) => {
       r.checked = (r.value === (pub.nameDisplayMode || 'full'));
     });
 
-    // 種目別スタッフPIN ＆ スタッフ専用URL一覧
-    const pinsEl = document.getElementById('pub-staff-pins-list');
-    if (pinsEl) {
-      pinsEl.innerHTML = opsUi.bundle.events.map((ev) => `
-        <div class="bg-white px-2.5 py-2 rounded-lg border border-amber-200 text-[11px] space-y-1">
-          <div class="flex items-center justify-between gap-2">
-            <div class="font-bold text-slate-900 truncate">${escapeHtml(ev.name)} <span class="text-[10px] text-slate-500 font-normal">(${escapeHtml(ev.venue || '第1会場')})</span></div>
-            <span class="font-mono font-extrabold text-amber-900 bg-amber-100 px-2 py-0.5 rounded tracking-widest shrink-0">PIN: ${escapeHtml(ev.staffPin || '0000')}</span>
-          </div>
-          <div class="flex items-center justify-end gap-1.5">
-            <button onclick="copyStaffUrl('${escapeJs(ev.id)}')" class="px-2 py-0.5 text-[10px] font-bold bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded text-blue-800">スタッフURL＋PINコピー</button>
-            <button onclick="copyStaffPin('${escapeJs(ev.id)}')" class="px-1.5 py-0.5 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 rounded text-slate-700">PINのみ</button>
-            <button onclick="regenerateStaffPin('${escapeJs(ev.id)}')" class="px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 hover:bg-amber-200 rounded text-amber-900">再発行</button>
-          </div>
-        </div>
-      `).join('');
+    const pubUrl = getPortalPreviewUrl();
+    const urlInput = document.getElementById('pub-portal-url-input');
+    if (urlInput) urlInput.value = pubUrl;
+    const qrBox = document.getElementById('pub-qr-box');
+    if (qrBox) qrBox.innerHTML = buildQrSvgMarkup(pubUrl, 136);
+
+    // 2. 審判用QR（全コート共通1種類＋報告機能ON/OFF）
+    const umpChk = document.getElementById('pub-umpire-report-checkbox');
+    const umpTxt = document.getElementById('pub-umpire-report-text');
+    const umpOnBox = document.getElementById('pub-umpire-qr-on-box');
+    const umpOffBox = document.getElementById('pub-umpire-qr-off-box');
+    if (umpChk) umpChk.checked = umpireOn;
+    if (umpTxt) {
+      umpTxt.textContent = umpireOn ? '報告機能 ON' : '報告機能 OFF';
+      umpTxt.className = umpireOn ? 'ml-1 text-[11px] font-extrabold text-amber-900' : 'ml-1 text-[11px] font-extrabold text-slate-500';
+    }
+    if (umpOnBox) umpOnBox.classList.toggle('hidden', !umpireOn);
+    if (umpOffBox) umpOffBox.classList.toggle('hidden', umpireOn);
+
+    const umpUrl = getUmpirePortalUrl();
+    const umpUrlInput = document.getElementById('pub-umpire-url-input');
+    if (umpUrlInput) umpUrlInput.value = umpUrl;
+    const umpQrBox = document.getElementById('pub-umpire-qr-box');
+    if (umpQrBox) umpQrBox.innerHTML = buildQrSvgMarkup(umpUrl, 136);
+
+    // 3. 運営用QR（種目選択＋スタッフPIN）
+    const events = opsUi.bundle.events || [];
+    if (!events.some((e) => e.id === opsUi.publishStaffEventId)) {
+      opsUi.publishStaffEventId = opsUi.bundle.activeEventId || (events[0] && events[0].id) || null;
+    }
+    const staffSel = document.getElementById('pub-staff-event-select');
+    if (staffSel) {
+      staffSel.innerHTML = events.map((ev) => `<option value="${escapeHtml(ev.id)}" ${ev.id === opsUi.publishStaffEventId ? 'selected' : ''}>${escapeHtml(ev.name)}（${escapeHtml(ev.venue || '第1会場')}）</option>`).join('');
+    }
+    const staffEv = events.find((e) => e.id === opsUi.publishStaffEventId) || events[0];
+    if (staffEv) {
+      const staffUrl = getStaffEventUrl(staffEv.id);
+      const staffUrlInp = document.getElementById('pub-staff-url-input');
+      if (staffUrlInp) staffUrlInp.value = staffUrl;
+      const staffPinVal = document.getElementById('pub-staff-pin-value');
+      if (staffPinVal) staffPinVal.textContent = staffEv.staffPin || '0000';
+      const staffQrBox = document.getElementById('pub-staff-qr-box');
+      if (staffQrBox) staffQrBox.innerHTML = buildQrSvgMarkup(staffUrl, 136);
     }
 
-    // URL ＆ QRコード生成
-    const urlStr = getPortalPreviewUrl();
-    const urlInput = document.getElementById('pub-portal-url-input');
-    if (urlInput) urlInput.value = urlStr;
-    const qrBox = document.getElementById('pub-qr-box');
-    if (qrBox) {
-      if (typeof qrcode === 'function') {
-        try {
-          const qr = qrcode(0, 'M');
-          qr.addData(urlStr);
-          qr.make();
-          qrBox.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2 });
-          const svg = qrBox.querySelector('svg');
-          if (svg) {
-            svg.setAttribute('width', '152');
-            svg.setAttribute('height', '152');
-          }
-        } catch (_) {
-          qrBox.innerHTML = `<div class="text-[11px] text-slate-400 p-4">QR生成に失敗しました</div>`;
-        }
-      } else {
-        qrBox.innerHTML = `<div class="text-[11px] text-slate-500 p-3">オフライン環境のためQRは<br/>オンライン接続時に自動生成されます</div>`;
-      }
-    }
+    // 4. QR印刷の面付け選択（1in1 / 2in1 / 4in1 / 8in1）同期
+    syncQrLayoutButtonsUi();
+  }
+
+  function syncQrLayoutButtonsUi() {
+    const cur = opsUi.qrPrintLayout || '4in1';
+    const descMap = {
+      '1in1': 'A4に大きく1枚（掲示板・入口案内向け）',
+      '2in1': 'A4に2枚（半分に切って2か所へ掲示）',
+      '4in1': 'A4に4枚（切り取り線付き・各コート掲示に最適）',
+      '8in1': 'A4に8枚（バインダー・引率配布向け）'
+    };
+    ['1in1', '2in1', '4in1', '8in1'].forEach((k) => {
+      const btn = document.getElementById(`btn-qr-layout-${k}`);
+      if (!btn) return;
+      btn.className = (cur === k)
+        ? 'px-2.5 py-1 rounded-md bg-slate-900 text-white shadow-sm transition'
+        : 'px-2.5 py-1 rounded-md text-slate-600 hover:text-slate-900 transition';
+    });
+    const descEl = document.getElementById('qr-layout-desc');
+    if (descEl) descEl.textContent = descMap[cur] || '';
+  }
+
+  function setQrPrintLayout(layout) {
+    opsUi.qrPrintLayout = ['1in1', '2in1', '4in1', '8in1'].includes(layout) ? layout : '4in1';
+    syncQrLayoutButtonsUi();
+  }
+
+  function selectPublishStaffEvent(evId) {
+    opsUi.publishStaffEventId = evId;
+    renderPublishModalContents();
   }
 
   function openPublishModal() {
@@ -2301,26 +2384,164 @@
 
   function updatePublishSettingsFromModal() {
     if (!opsUi.bundle) return;
-    const enabled = Boolean(document.getElementById('pub-enabled-checkbox').checked);
-    const passcode = String(document.getElementById('pub-passcode-input').value || '').trim();
+    const enabled = Boolean(document.getElementById('pub-enabled-checkbox')?.checked);
+    const umpireReportEnabled = Boolean(document.getElementById('pub-umpire-report-checkbox')?.checked);
+    const passcode = String(document.getElementById('pub-passcode-input')?.value || '').trim();
     const checkedRadio = document.querySelector('input[name="pub-name-mode"]:checked');
     const nameDisplayMode = checkedRadio ? checkedRadio.value : 'full';
-    opsUi.bundle.publish = { enabled, passcode, nameDisplayMode };
+    opsUi.bundle.publish = { enabled, umpireReportEnabled, passcode, nameDisplayMode };
     saveBundleToLocalStorage();
     updatePublishIndicator();
     renderPublishModalContents();
     if (state.mainView === 'spectator') renderSpectatorView();
+    if (state.mainView === 'umpire') renderUmpireView();
   }
 
   function copyPortalUrl() {
     const url = getPortalPreviewUrl();
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(url).then(() => showToast('公開ポータルURLをコピーしました', 'success'));
+      navigator.clipboard.writeText(url).then(() => showToast('閲覧用URLをコピーしました', 'success'));
     } else {
       const inp = document.getElementById('pub-portal-url-input');
       if (inp) { inp.select(); document.execCommand('copy'); }
-      showToast('公開ポータルURLをコピーしました', 'success');
+      showToast('閲覧用URLをコピーしました', 'success');
     }
+  }
+
+  function copyUmpireUrl() {
+    const url = getUmpirePortalUrl();
+    const text = `【${opsUi.bundle ? opsUi.bundle.name : '大会'}】審判専用・試合結果報告ページ\n${url}\n※コート選択→対戦確認→審判＆勝者ペア2重チェック後に送信`;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => showToast('審判用URLをコピーしました', 'success'));
+    } else {
+      const inp = document.getElementById('pub-umpire-url-input');
+      if (inp) { inp.select(); document.execCommand('copy'); }
+      showToast('審判用URLをコピーしました', 'success');
+    }
+  }
+
+  function copySelectedStaffUrl() {
+    if (opsUi.publishStaffEventId) copyStaffUrl(opsUi.publishStaffEventId);
+  }
+
+  function copySelectedStaffPin() {
+    if (opsUi.publishStaffEventId) copyStaffPin(opsUi.publishStaffEventId);
+  }
+
+  function regenerateSelectedStaffPin() {
+    if (opsUi.publishStaffEventId) regenerateStaffPin(opsUi.publishStaffEventId);
+  }
+
+  function buildQrPrintCardHtml(spec, layout) {
+    const qrSizes = { '1in1': 310, '2in1': 195, '4in1': 142, '8in1': 92 };
+    const isTiny = layout === '8in1';
+    const isLarge = layout === '1in1';
+    const qrSvg = buildQrSvgMarkup(spec.url, qrSizes[layout] || 142);
+    return `
+      <div class="qr-print-card" style="background:#ffffff;">
+        <div style="display:inline-block;padding:${isTiny ? '1px 7px' : '3px 12px'};border-radius:999px;background:${spec.badgeBg};color:${spec.badgeColor};font-weight:800;font-size:${isTiny ? '9px' : (isLarge ? '15px' : '11px')};margin-bottom:${isTiny ? '2px' : '5px'};">
+          ${escapeHtml(spec.badge)}
+        </div>
+        <div style="font-weight:800;color:#0f172a;font-size:${isTiny ? '10px' : (isLarge ? '20px' : '13px')};line-height:1.25;max-width:95%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+          ${escapeHtml(spec.tournamentName)}
+        </div>
+        <div style="font-weight:700;color:#334155;font-size:${isTiny ? '9px' : (isLarge ? '15px' : '11px')};margin-bottom:${isTiny ? '3px' : '6px'};">
+          ${escapeHtml(spec.subtitle)}
+        </div>
+        <div style="padding:${isTiny ? '2px' : '6px'};border:1px solid #cbd5e1;border-radius:8px;background:#ffffff;display:inline-flex;align-items:center;justify-content:center;">
+          ${qrSvg}
+        </div>
+        ${spec.note ? `<div style="margin-top:${isTiny ? '3px' : '6px'};font-size:${isTiny ? '8.5px' : (isLarge ? '13px' : '10px')};font-weight:700;color:#1e293b;line-height:1.35;max-width:94%;">${escapeHtml(spec.note)}</div>` : ''}
+        ${spec.extra ? `<div style="margin-top:2px;font-size:${isTiny ? '8px' : (isLarge ? '13px' : '10px')};font-weight:800;color:${spec.extraColor || '#0f172a'};font-family:monospace;">${escapeHtml(spec.extra)}</div>` : ''}
+      </div>
+    `;
+  }
+
+  function printQrSheet(kind) {
+    if (!opsUi.bundle) return;
+    const sheet = document.getElementById('qr-print-sheet');
+    if (!sheet) return;
+    const layout = opsUi.qrPrintLayout || '4in1';
+    const perPage = { '1in1': 1, '2in1': 2, '4in1': 4, '8in1': 8 }[layout] || 4;
+    const tName = opsUi.bundle.name || '大会';
+    const pub = opsUi.bundle.publish || {};
+    const events = opsUi.bundle.events || [];
+    const staffEv = events.find((e) => e.id === opsUi.publishStaffEventId) || events[0];
+
+    const makePublicSpec = () => ({
+      badge: '生徒・保護者 閲覧用QR',
+      badgeBg: '#059669',
+      badgeColor: '#ffffff',
+      tournamentName: tName,
+      subtitle: 'コート状況・トーナメント速報（閲覧専用）',
+      url: getPortalPreviewUrl(),
+      note: 'スマホで読み取ると試合進行・トーナメント表をリアルタイム確認できます',
+      extra: pub.passcode ? `閲覧パスコード: ${pub.passcode}` : ''
+    });
+
+    const makeUmpireSpec = () => ({
+      badge: '審判専用・結果報告QR',
+      badgeBg: '#f59e0b',
+      badgeColor: '#0f172a',
+      tournamentName: tName,
+      subtitle: '全コート共通（試合終了後に結果送信）',
+      url: getUmpirePortalUrl(),
+      note: '①コート選択 → ②対戦相手確認 → ③審判＋勝者ペア2重チェック後に送信',
+      extra: '※本部承認後にトーナメントへ反映'
+    });
+
+    const makeStaffSpec = (ev) => ({
+      badge: '会場運営スタッフ用QR',
+      badgeBg: '#4f46e5',
+      badgeColor: '#ffffff',
+      tournamentName: tName,
+      subtitle: `${ev ? ev.name : '種目'}（${ev ? (ev.venue || '第1会場') : '第1会場'}）`,
+      url: getStaffEventUrl(ev ? ev.id : 'ev1'),
+      note: '進行表操作・スコア承認・アナウンス配信（関係者専用）',
+      extra: `スタッフPIN: ${ev && ev.staffPin ? ev.staffPin : '0000'}`,
+      extraColor: '#4338ca'
+    });
+
+    let cards = [];
+    if (kind === 'public') {
+      const s = makePublicSpec();
+      cards = Array.from({ length: perPage }, () => s);
+    } else if (kind === 'umpire') {
+      if (pub.umpireReportEnabled === false) {
+        showToast('審判報告機能がOFFになっています。ONにしてから印刷してください。', 'warn');
+        return;
+      }
+      const s = makeUmpireSpec();
+      cards = Array.from({ length: perPage }, () => s);
+    } else if (kind === 'staff') {
+      const s = makeStaffSpec(staffEv);
+      cards = Array.from({ length: perPage }, () => s);
+    } else {
+      // 'all': 閲覧用 + 審判用(ON時) + 全種目の運営用 をまとめて面付け
+      cards.push(makePublicSpec());
+      if (pub.umpireReportEnabled !== false) cards.push(makeUmpireSpec());
+      events.forEach((ev) => cards.push(makeStaffSpec(ev)));
+    }
+
+    const pagesHtml = [];
+    for (let i = 0; i < cards.length; i += perPage) {
+      const slice = cards.slice(i, i + perPage);
+      pagesHtml.push(`<div class="qr-print-page layout-${layout}">${slice.map((c) => buildQrPrintCardHtml(c, layout)).join('')}</div>`);
+    }
+    sheet.innerHTML = pagesHtml.join('');
+
+    const styleEl = document.getElementById('dynamic-print-page-style');
+    const prevPageCss = styleEl ? styleEl.textContent : '';
+    if (styleEl) styleEl.textContent = '@page { size: A4 portrait; margin: 10mm; }';
+
+    const cleanup = () => {
+      document.body.classList.remove('printing-qr');
+      if (styleEl) styleEl.textContent = prevPageCss;
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    document.body.classList.add('printing-qr');
+    setTimeout(() => window.print(), 140);
   }
 
   function copyStaffPin(eventId) {
@@ -3602,6 +3823,646 @@
   }
 
   // =========================================================================
+  // 5e. 審判専用ページ（3ステップ：コート選択 → 対戦確認 → スコア＆2重チェック）
+  //     ＆ 本部・スタッフ承認待ちバー（案A：ワンタップ確定）
+  // =========================================================================
+  function getCombinedPendingReports() {
+    const activeEv = getActiveEvent();
+    const activeEvId = activeEv ? activeEv.id : null;
+    const cloudList = Array.isArray(opsUi.pendingReports) ? opsUi.pendingReports : [];
+    const localList = (opsUi.localPreviewReports || []).filter((r) => r.status === 'pending' && (!activeEvId || r.evId === activeEvId));
+    return cloudList.concat(localList);
+  }
+
+  function renderOopPendingReportsBar() {
+    const bar = document.getElementById('oop-pending-reports-bar');
+    if (!bar) return;
+    const list = getCombinedPendingReports();
+    if (!list.length) {
+      bar.classList.add('hidden');
+      bar.innerHTML = '';
+      return;
+    }
+    bar.classList.remove('hidden');
+    bar.innerHTML = `
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 font-extrabold text-amber-950">
+          <span class="w-2 h-2 rounded-full bg-rose-600 live-dot shrink-0"></span>
+          <span>📩 審判からの試合結果報告（${list.length}件・承認待ち）</span>
+        </div>
+        <span class="text-[10px] font-bold text-amber-800">確認して「承認して確定」を押すとトーナメント＆公開画面へ反映されます</span>
+      </div>
+      <div class="space-y-1.5">
+        ${list.map((r) => {
+          const winText = r.winner === 0 ? r.p1Label : r.p2Label;
+          const scoreTxt = r.wo ? '棄権 (WO)' : `${r.g1} - ${r.g2}`;
+          const tm = r.createdAt ? formatLocalClock(r.createdAt) : '';
+          return `
+            <div class="bg-white rounded-xl border border-amber-300 px-3 py-2 flex flex-wrap items-center justify-between gap-2 shadow-sm">
+              <div class="min-w-0 flex-1 space-y-0.5">
+                <div class="flex items-center gap-1.5 flex-wrap text-[10.5px]">
+                  <span class="px-1.5 py-0.2 rounded bg-slate-900 text-white font-extrabold">コート ${escapeHtml(r.court || '?')}</span>
+                  <span class="font-extrabold text-slate-700">${escapeHtml(r.matchNo || r.matchKey)}（${escapeHtml(r.roundLabel || '')}）</span>
+                  <span class="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 font-bold text-[9.5px]">✓ 審判・勝者2重確認済</span>
+                  ${tm ? `<span class="text-slate-400 font-semibold">${escapeHtml(tm)} 報告</span>` : ''}
+                  ${r.isLocalPreview ? `<span class="px-1.5 py-0.2 rounded bg-blue-100 text-blue-800 font-bold text-[9.5px]">プレビュー送信</span>` : ''}
+                </div>
+                <div class="text-xs font-extrabold text-slate-900 truncate">
+                  ${escapeHtml(r.p1Label)} <span class="text-rose-600 mx-1">${escapeHtml(scoreTxt)}</span> ${escapeHtml(r.p2Label)}
+                  <span class="ml-1.5 text-[11px] text-emerald-700">（勝：${escapeHtml(winText)}）</span>
+                </div>
+              </div>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button onclick="approvePendingMatchReport('${escapeJs(r.id)}')"
+                        class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-extrabold shadow-sm transition">
+                  ✓ 承認して確定
+                </button>
+                <button onclick="editPendingMatchReport('${escapeJs(r.id)}')"
+                        class="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-[11px] font-bold transition">
+                  ✎ 修正
+                </button>
+                <button onclick="rejectPendingMatchReport('${escapeJs(r.id)}')"
+                        class="px-2 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[11px] font-bold transition">
+                  却下
+                </button>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  async function finalizeReportResolution(report, status) {
+    if (!report) return;
+    if (report.isLocalPreview) {
+      report.status = status;
+      opsUi.localPreviewReports = opsUi.localPreviewReports.filter((x) => x.status === 'pending');
+    } else if (window.BracketCloud && typeof window.BracketCloud.resolveMatchReport === 'function') {
+      await window.BracketCloud.resolveMatchReport(report.docId, report.id, status);
+      opsUi.pendingReports = opsUi.pendingReports.filter((x) => x.id !== report.id);
+    }
+    renderOopPendingReportsBar();
+  }
+
+  async function approvePendingMatchReport(reportId) {
+    const rep = getCombinedPendingReports().find((r) => r.id === reportId);
+    if (!rep) return;
+    if (rep.isConsolation) {
+      if (!state.consolation) return;
+      state.consolation.results[rep.matchKey] = rep.wo
+        ? { g1: rep.winner === 0 ? 'W' : '0', g2: rep.winner === 1 ? 'W' : '0', winner: rep.winner, wo: true }
+        : { g1: rep.g1, g2: rep.g2, winner: rep.winner, wo: false };
+    } else {
+      state.results[rep.matchKey] = rep.wo
+        ? { g1: rep.winner === 0 ? 'W' : '0', g2: rep.winner === 1 ? 'W' : '0', winner: rep.winner, wo: true }
+        : { g1: rep.g1, g2: rep.g2, winner: rep.winner, wo: false };
+    }
+    if (!state.oop) state.oop = OopEngine.createDefaultOopState();
+    state.oop.statuses[rep.matchKey] = rep.wo ? 'wo' : 'finished';
+    state.oop.updatedAt = new Date().toISOString();
+    syncOopWithBracket();
+    saveToLocalStorage();
+    await finalizeReportResolution(rep, 'approved');
+    if (window.BracketCloud && typeof window.BracketCloud.scheduleCloudSync === 'function') {
+      window.BracketCloud.scheduleCloudSync(true);
+    }
+    renderOopView();
+    showToast(`${rep.matchNo} の審判報告を承認・確定しました`, 'success');
+  }
+
+  function editPendingMatchReport(reportId) {
+    const rep = getCombinedPendingReports().find((r) => r.id === reportId);
+    if (!rep) return;
+    opsUi.editingReportId = rep.id;
+    const rawKey = rep.isConsolation ? String(rep.matchKey).replace(/^C_/, '') : rep.matchKey;
+    openScoreModal(rawKey, rep.p1Label, rep.p2Label, Boolean(rep.isConsolation), true);
+    const s1 = document.getElementById('score-p1-games');
+    const s2 = document.getElementById('score-p2-games');
+    if (s1 && !rep.wo) s1.value = String(rep.g1);
+    if (s2 && !rep.wo) s2.value = String(rep.g2);
+  }
+
+  async function rejectPendingMatchReport(reportId) {
+    const rep = getCombinedPendingReports().find((r) => r.id === reportId);
+    if (!rep) return;
+    if (!confirm(`${rep.matchNo}（コート${rep.court}）の報告を却下しますか？\n※トーナメントの結果には反映されません。`)) return;
+    await finalizeReportResolution(rep, 'rejected');
+    showToast(`${rep.matchNo} の報告を却下しました`, 'info');
+  }
+
+  function openUmpirePreviewFromModal() {
+    closePublishModal();
+    opsUi.umpirePortal.step = 1;
+    opsUi.umpirePortal.courtKey = null;
+    opsUi.umpirePortal.matchKey = null;
+    opsUi.umpirePortal.sentSummary = null;
+    switchMainView('umpire');
+  }
+
+  function getUmpireActiveContext() {
+    if (opsUi.standaloneUmpire) {
+      return {
+        isStandalone: true,
+        tid: opsUi.standaloneUmpire.meta.id,
+        tournamentName: opsUi.standaloneUmpire.meta.name || '大会',
+        eventsList: opsUi.standaloneUmpire.meta.events || [],
+        activeEvent: opsUi.standaloneUmpire.liveEvent,
+        evData: opsUi.standaloneUmpire.liveEvent.data,
+        nameMode: opsUi.standaloneUmpire.meta.nameDisplayMode || 'full',
+        reportEnabled: Boolean(opsUi.standaloneUmpire.meta.umpireReportEnabled)
+      };
+    }
+    if (!opsUi.bundle) return null;
+    const activeEv = getActiveEvent();
+    if (activeEv) activeEv.data = captureActiveStateSnapshot();
+    const target = opsUi.bundle.events.find((e) => e.id === opsUi.umpirePortal.eventId) || activeEv;
+    if (!target) return null;
+    opsUi.umpirePortal.eventId = target.id;
+    const pub = opsUi.bundle.publish || {};
+    return {
+      isStandalone: false,
+      tid: opsUi.bundle.id,
+      tournamentName: opsUi.bundle.name || '大会',
+      eventsList: opsUi.bundle.events || [],
+      activeEvent: target,
+      evData: target.data,
+      nameMode: pub.nameDisplayMode || 'full',
+      reportEnabled: pub.umpireReportEnabled !== false
+    };
+  }
+
+  function renderStandaloneUmpirePortal(meta, liveEventObj) {
+    opsUi.standaloneUmpire = { meta, liveEvent: liveEventObj };
+    renderUmpireView();
+  }
+
+  function renderUmpireView() {
+    const frame = document.getElementById('umpire-portal-frame');
+    const ctx = getUmpireActiveContext();
+    if (!frame || !ctx || !ctx.evData) return;
+
+    const u = opsUi.umpirePortal;
+    const evData = ctx.evData;
+    const aliases = evData.schoolAliases || {};
+    const shortSchool = (raw) => {
+      const k = String(raw || '').trim();
+      if (Object.prototype.hasOwnProperty.call(aliases, k) && String(aliases[k] || '').trim()) return String(aliases[k]).trim();
+      return formatSchoolShortName(k);
+    };
+    const pairFmt = (entry) => OopEngine.formatSpectatorPairName(entry, ctx.nameMode, shortSchool);
+    const catalog = OopEngine.buildMatchCatalog({
+      bracketSize: evData.bracketSize || 16,
+      slots: evData.slots || [],
+      activeSlotMask: evData.activeSlotMask || [],
+      results: evData.results || {},
+      consolation: evData.consolation || null,
+      labelFormatter: pairFmt
+    });
+    const oop = OopEngine.reconcileOopState(evData.oop, catalog).oop;
+    const nCourts = oop.courtCount || 4;
+    const matchFormat = evData.matchFormat || 7;
+    const winG = matchFormat === 5 ? 3 : 4;
+
+    // 報告機能がOFFの場合
+    if (!ctx.reportEnabled) {
+      frame.innerHTML = `
+        <div class="${ctx.isStandalone ? 'spectator-standalone-header ' : ''}bg-slate-900 text-white px-4 py-3 shrink-0">
+          <div class="text-[10px] font-extrabold text-amber-300">審判専用・試合結果報告</div>
+          <h2 class="text-sm font-extrabold truncate">${escapeHtml(ctx.tournamentName)}</h2>
+        </div>
+        <div class="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-3 bg-white">
+          <div class="w-12 h-12 rounded-2xl bg-slate-100 text-slate-500 flex items-center justify-center text-xl">🔒</div>
+          <div class="text-sm font-extrabold text-slate-900">現在、審判からの結果報告機能は OFF です</div>
+          <p class="text-xs text-slate-500 leading-relaxed">試合結果は大会本部へ直接ご報告ください。</p>
+        </div>
+      `;
+      return;
+    }
+
+    // 選択中コートと対象試合を解決
+    const getCourtMatches = (cKey) => {
+      const list = oop.courts[String(cKey)] || [];
+      return list
+        .filter((k) => !OopEngine.isBlankKey(k) && catalog.matchMap[k])
+        .map((k, idx) => ({ key: k, match: catalog.matchMap[k], status: oop.statuses[k] || 'waiting', order: idx + 1 }));
+    };
+
+    const getDefaultCourtMatch = (cKey) => {
+      const items = getCourtMatches(cKey);
+      return items.find((x) => x.status === 'playing' || x.status === 'calling')
+        || items.find((x) => !x.match.isFinished && x.match.isReady)
+        || items.find((x) => !x.match.isFinished)
+        || null;
+    };
+
+    let bodyHtml = '';
+    if (u.sentSummary) {
+      const s = u.sentSummary;
+      bodyHtml = `
+        <div class="py-6 px-2 text-center space-y-4">
+          <div class="w-14 h-14 mx-auto rounded-full bg-emerald-600 text-white flex items-center justify-center text-2xl font-extrabold shadow">✓</div>
+          <div class="space-y-1">
+            <h3 class="text-base font-extrabold text-slate-900">本部へ試合結果を送信しました</h3>
+            <p class="text-xs text-slate-500">本部が内容を確認・承認するとトーナメント表へ反映されます。</p>
+          </div>
+          <div class="p-4 rounded-2xl bg-white border border-slate-200 text-left space-y-1.5 shadow-sm text-xs">
+            <div class="flex items-center justify-between text-[11px] font-bold text-slate-500">
+              <span>コート ${escapeHtml(s.court)} ・ ${escapeHtml(s.matchNo)}（${escapeHtml(s.roundLabel)}）</span>
+              <span class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 font-extrabold">本部承認待ち</span>
+            </div>
+            <div class="font-extrabold text-slate-900 text-sm">${escapeHtml(s.p1Label)} <span class="text-rose-600 mx-1">${escapeHtml(s.scoreText)}</span> ${escapeHtml(s.p2Label)}</div>
+            <div class="font-extrabold text-emerald-700">勝者：${escapeHtml(s.winnerLabel)}</div>
+            <div class="text-[11px] text-emerald-700 font-bold pt-1 border-t border-slate-100">✓ 審判・勝者ペア 2重確認済み</div>
+          </div>
+          <button onclick="resetUmpirePortalToStep1()"
+                  class="w-full py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-extrabold shadow transition">
+            コート選択へ戻る
+          </button>
+        </div>
+      `;
+    } else if (u.step === 1) {
+      // STEP 1：審判に入るコートを選択
+      let courtCardsHtml = '';
+      for (let c = 1; c <= nCourts; c++) {
+        const cKey = String(c);
+        const cur = getDefaultCourtMatch(cKey);
+        let badge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500">予定なし</span>`;
+        let borderCls = 'border-slate-200';
+        if (cur) {
+          if (cur.status === 'playing') {
+            badge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-600 text-white flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-white live-dot"></span>試合中</span>`;
+            borderCls = 'border-rose-300 ring-1 ring-rose-100';
+          } else if (cur.status === 'calling') {
+            badge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-500 text-white">コール中</span>`;
+            borderCls = 'border-amber-300';
+          } else {
+            badge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-900">待機中</span>`;
+          }
+        }
+        courtCardsHtml += `
+          <button onclick="selectUmpireCourt('${cKey}')" ${cur ? '' : 'disabled'}
+                  class="w-full text-left p-3.5 rounded-2xl bg-white border ${borderCls} shadow-sm transition ${cur ? 'hover:border-amber-500 active:scale-[0.99]' : 'opacity-50 cursor-not-allowed'} space-y-1.5">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-sm font-extrabold text-slate-900">コート ${c}</span>
+              ${badge}
+            </div>
+            ${cur
+              ? `<div class="text-xs font-bold text-slate-800 leading-snug">
+                   <span class="text-[10.5px] font-extrabold text-slate-500 mr-1">${escapeHtml(cur.match.matchNo)}（${escapeHtml(cur.match.roundLabel)}）</span><br/>
+                   ${escapeHtml(cur.match.p1Label)} <span class="text-slate-400 mx-1">vs</span> ${escapeHtml(cur.match.p2Label)}
+                 </div>`
+              : `<div class="text-xs text-slate-400">未終了の試合はありません</div>`}
+          </button>
+        `;
+      }
+      bodyHtml = `
+        <div class="text-xs font-extrabold text-slate-700">審判を担当するコートを選んでください</div>
+        <div class="space-y-2.5">${courtCardsHtml}</div>
+      `;
+    } else {
+      const courtItems = getCourtMatches(u.courtKey).filter((x) => !x.match.isFinished);
+      const selectedItem = courtItems.find((x) => x.key === u.matchKey) || courtItems[0] || null;
+      if (!selectedItem) {
+        bodyHtml = `
+          <div class="p-6 text-center space-y-3 bg-white rounded-2xl border border-slate-200">
+            <div class="text-xs font-bold text-slate-600">このコートに未終了の試合がありません</div>
+            <button onclick="resetUmpirePortalToStep1()" class="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">コート選択へ戻る</button>
+          </div>
+        `;
+      } else {
+        u.matchKey = selectedItem.key;
+        const m = selectedItem.match;
+        if (u.step === 2) {
+          // STEP 2：対戦相手の確認
+          bodyHtml = `
+            <div class="text-xs font-extrabold text-slate-700">コートと対戦相手に間違いがないか確認してください</div>
+            <div class="p-4 rounded-2xl bg-white border-2 border-amber-400 shadow-sm space-y-3">
+              <div class="flex items-center justify-between gap-2">
+                <span class="px-2.5 py-0.5 rounded-lg bg-slate-900 text-white text-xs font-extrabold">コート ${escapeHtml(u.courtKey)}</span>
+                <span class="text-xs font-extrabold text-slate-700">${escapeHtml(m.matchNo)}（${escapeHtml(m.roundLabel)}）</span>
+              </div>
+              <div class="space-y-2 text-center py-2">
+                <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm font-extrabold text-slate-900">${escapeHtml(m.p1Label)}</div>
+                <div class="text-xs font-extrabold text-slate-400">VS</div>
+                <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm font-extrabold text-slate-900">${escapeHtml(m.p2Label)}</div>
+              </div>
+              ${courtItems.length > 1 ? `
+                <div class="pt-2 border-t border-slate-100">
+                  <label class="block text-[10px] font-bold text-slate-500 mb-1">同じコートの別の試合を選ぶ場合</label>
+                  <select onchange="selectUmpireCourtMatch(this.value)" class="w-full px-2.5 py-1.5 text-xs font-bold border border-slate-300 rounded-lg bg-slate-50">
+                    ${courtItems.map((it) => `<option value="${escapeHtml(it.key)}" ${it.key === m.key ? 'selected' : ''}>第${it.order}試合 ${escapeHtml(it.match.matchNo)}: ${escapeHtml(it.match.p1Label)} vs ${escapeHtml(it.match.p2Label)}</option>`).join('')}
+                  </select>
+                </div>
+              ` : ''}
+            </div>
+            <div class="space-y-2 pt-1">
+              <button onclick="confirmUmpireMatch()"
+                      class="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold shadow transition">
+                この試合で間違いありません（スコア入力へ）
+              </button>
+              <button onclick="resetUmpirePortalToStep1()"
+                      class="w-full py-2.5 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-xs font-bold transition">
+                ← コートを選び直す
+              </button>
+            </div>
+          `;
+        } else {
+          // STEP 3：スコア入力 ＋ 審判＆勝者ペアの2重チェック
+          const scoreOpts = Array.from({ length: winG + 1 }, (_, i) => i);
+          const validScore = u.wo || (u.g1 !== u.g2 && (u.g1 === winG || u.g2 === winG));
+          const winnerIdx = u.wo ? u.woWinner : (u.g1 > u.g2 ? 0 : 1);
+          const winnerLabel = validScore ? (winnerIdx === 0 ? m.p1Label : m.p2Label) : '（未確定）';
+          const scoreSummary = u.wo ? '棄権 (WO)' : `${u.g1} - ${u.g2}`;
+          const canSend = validScore && u.umpireChecked && u.winnerChecked && !u.submitting;
+
+          bodyHtml = `
+            <div class="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-3">
+              <div class="flex items-center justify-between text-[11px] font-bold text-slate-500">
+                <span>コート ${escapeHtml(u.courtKey)} ・ ${escapeHtml(m.matchNo)}</span>
+                <span>${matchFormat}Gマッチ（${winG}G先取）</span>
+              </div>
+
+              ${u.wo ? `
+                <div class="p-3 rounded-xl bg-amber-50 border border-amber-200 space-y-2">
+                  <div class="text-xs font-extrabold text-amber-950">棄権（WO）の勝者ペアを選択</div>
+                  <label class="flex items-center gap-2 p-2 rounded-lg bg-white border border-slate-200 text-xs font-bold cursor-pointer">
+                    <input type="radio" name="ump-wo-win" value="0" ${u.woWinner === 0 ? 'checked' : ''} onchange="setUmpireWoWinner(0)" class="accent-amber-600" />
+                    <span class="truncate">${escapeHtml(m.p1Label)}</span>
+                  </label>
+                  <label class="flex items-center gap-2 p-2 rounded-lg bg-white border border-slate-200 text-xs font-bold cursor-pointer">
+                    <input type="radio" name="ump-wo-win" value="1" ${u.woWinner === 1 ? 'checked' : ''} onchange="setUmpireWoWinner(1)" class="accent-amber-600" />
+                    <span class="truncate">${escapeHtml(m.p2Label)}</span>
+                  </label>
+                </div>
+              ` : `
+                <div class="space-y-2.5">
+                  <div class="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+                    <div class="min-w-0 flex-1 text-xs font-extrabold text-slate-900 truncate">${escapeHtml(m.p1Label)}</div>
+                    <button onclick="setUmpireQuickWinner(0)" class="px-2 py-1 rounded-md bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-extrabold shrink-0">勝(${winG})</button>
+                    <select onchange="setUmpireScore(0, this.value)" class="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-sm font-extrabold">
+                      ${scoreOpts.map((v) => `<option value="${v}" ${u.g1 === v ? 'selected' : ''}>${v}</option>`).join('')}
+                    </select>
+                  </div>
+                  <div class="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+                    <div class="min-w-0 flex-1 text-xs font-extrabold text-slate-900 truncate">${escapeHtml(m.p2Label)}</div>
+                    <button onclick="setUmpireQuickWinner(1)" class="px-2 py-1 rounded-md bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-extrabold shrink-0">勝(${winG})</button>
+                    <select onchange="setUmpireScore(1, this.value)" class="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-sm font-extrabold">
+                      ${scoreOpts.map((v) => `<option value="${v}" ${u.g2 === v ? 'selected' : ''}>${v}</option>`).join('')}
+                    </select>
+                  </div>
+                </div>
+              `}
+
+              <div class="flex items-center justify-between pt-1.5 border-t border-slate-100">
+                <div class="text-xs font-extrabold ${validScore ? 'text-emerald-700' : 'text-rose-600'}">
+                  ${validScore ? `勝者：${escapeHtml(winnerLabel)}（${escapeHtml(scoreSummary)}）` : `いずれかのペアを ${winG} にしてください`}
+                </div>
+                <label class="inline-flex items-center gap-1 text-[11px] font-bold text-slate-600 cursor-pointer shrink-0">
+                  <input type="checkbox" ${u.wo ? 'checked' : ''} onchange="toggleUmpireWo(this.checked)" class="accent-amber-600" />
+                  <span>棄権(WO)</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- 審判＋勝者ペア 2重チェック（必須） -->
+            <div class="p-3.5 rounded-2xl bg-amber-50 border-2 border-amber-400 space-y-2.5">
+              <div class="text-xs font-extrabold text-amber-950">送信前の2重確認（両方チェック必須）</div>
+              <label class="flex items-start gap-2.5 p-2 rounded-xl bg-white border border-amber-200 text-xs font-bold text-slate-800 cursor-pointer">
+                <input type="checkbox" ${u.umpireChecked ? 'checked' : ''} onchange="toggleUmpireDoubleCheck('umpire', this.checked)" class="mt-0.5 w-4 h-4 accent-emerald-600 shrink-0" />
+                <span><b>【審判確認】</b>スコアと勝者に間違いありません</span>
+              </label>
+              <label class="flex items-start gap-2.5 p-2 rounded-xl bg-white border border-amber-200 text-xs font-bold text-slate-800 cursor-pointer">
+                <input type="checkbox" ${u.winnerChecked ? 'checked' : ''} onchange="toggleUmpireDoubleCheck('winner', this.checked)" class="mt-0.5 w-4 h-4 accent-emerald-600 shrink-0" />
+                <span><b>【勝者ペア確認】</b>勝者（${escapeHtml(winnerLabel)}）も結果を確認しました</span>
+              </label>
+            </div>
+
+            <div class="space-y-2">
+              <button ${canSend ? '' : 'disabled'} onclick="submitUmpireResult()"
+                      class="w-full py-3 rounded-xl text-xs font-extrabold shadow transition ${canSend ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-200 text-slate-500 cursor-not-allowed'}">
+                ${u.submitting ? '送信中...' : (canSend ? '本部へ試合結果を送信する' : '審判・勝者ペアの2重チェックを入れてください')}
+              </button>
+              <button onclick="backUmpireToConfirm()" class="w-full py-2 rounded-xl bg-white border border-slate-300 text-slate-700 text-xs font-bold">
+                ← 対戦相手の確認へ戻る
+              </button>
+            </div>
+          `;
+        }
+      }
+    }
+
+    const stepBadge = u.sentSummary ? '送信完了' : `STEP ${u.step}/3`;
+    frame.innerHTML = `
+      <div class="${ctx.isStandalone ? 'spectator-standalone-header ' : ''}bg-gradient-to-br from-slate-950 via-slate-900 to-amber-950 text-white px-4 pt-3 pb-2.5 space-y-2 shrink-0">
+        <div class="flex items-center justify-between gap-2">
+          <div class="min-w-0">
+            <div class="text-[10px] font-extrabold text-amber-300">審判専用・試合結果報告</div>
+            <h2 class="text-sm font-extrabold truncate">${escapeHtml(ctx.tournamentName)}</h2>
+          </div>
+          <span class="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-400 text-slate-950 shrink-0">${stepBadge}</span>
+        </div>
+        ${(ctx.eventsList || []).length > 1 ? `
+          <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+            ${ctx.eventsList.map((ev) => {
+              const act = ev.id === ctx.activeEvent.id;
+              return `<button onclick="selectUmpireEvent('${escapeJs(ev.id)}')"
+                              class="px-2.5 py-0.5 text-[10.5px] font-bold rounded-full shrink-0 transition ${act ? 'bg-amber-400 text-slate-950' : 'bg-white/10 text-slate-200 hover:bg-white/20'}">
+                        ${escapeHtml(ev.name)}
+                      </button>`;
+            }).join('')}
+          </div>
+        ` : `<div class="text-[11px] font-bold text-slate-300">${escapeHtml(ctx.activeEvent.name)}（${escapeHtml(oop.venue || ctx.activeEvent.venue || '第1会場')}）</div>`}
+      </div>
+
+      <!-- 3ステップバー -->
+      <div class="grid grid-cols-3 bg-white border-b border-slate-200 text-center text-[11px] font-extrabold shrink-0">
+        <div class="py-2 border-b-2 ${!u.sentSummary && u.step === 1 ? 'border-amber-500 text-amber-800 bg-amber-50/50' : 'border-transparent text-slate-400'}">1. コート選択</div>
+        <div class="py-2 border-b-2 ${!u.sentSummary && u.step === 2 ? 'border-amber-500 text-amber-800 bg-amber-50/50' : 'border-transparent text-slate-400'}">2. 対戦確認</div>
+        <div class="py-2 border-b-2 ${!u.sentSummary && u.step === 3 ? 'border-amber-500 text-amber-800 bg-amber-50/50' : 'border-transparent text-slate-400'}">3. スコア送信</div>
+      </div>
+
+      <div class="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3.5 pb-8 space-y-3 bg-slate-100/90 spectator-bottom-nav">
+        ${bodyHtml}
+      </div>
+    `;
+  }
+
+  function selectUmpireEvent(evId) {
+    opsUi.umpirePortal.step = 1;
+    opsUi.umpirePortal.courtKey = null;
+    opsUi.umpirePortal.matchKey = null;
+    opsUi.umpirePortal.sentSummary = null;
+    if (opsUi.standaloneUmpire && window.BracketCloud) {
+      window.BracketCloud.subscribeUmpireEvent(opsUi.standaloneUmpire.meta.id, evId);
+    } else {
+      opsUi.umpirePortal.eventId = evId;
+      renderUmpireView();
+    }
+  }
+
+  function selectUmpireCourt(courtKey) {
+    opsUi.umpirePortal.courtKey = String(courtKey);
+    opsUi.umpirePortal.matchKey = null;
+    opsUi.umpirePortal.step = 2;
+    opsUi.umpirePortal.umpireChecked = false;
+    opsUi.umpirePortal.winnerChecked = false;
+    opsUi.umpirePortal.sentSummary = null;
+    renderUmpireView();
+  }
+
+  function selectUmpireCourtMatch(matchKey) {
+    opsUi.umpirePortal.matchKey = matchKey;
+    renderUmpireView();
+  }
+
+  function confirmUmpireMatch() {
+    const ctx = getUmpireActiveContext();
+    const winG = (ctx && ctx.evData && ctx.evData.matchFormat === 5) ? 3 : 4;
+    opsUi.umpirePortal.step = 3;
+    opsUi.umpirePortal.g1 = winG;
+    opsUi.umpirePortal.g2 = 0;
+    opsUi.umpirePortal.wo = false;
+    opsUi.umpirePortal.woWinner = 0;
+    opsUi.umpirePortal.umpireChecked = false;
+    opsUi.umpirePortal.winnerChecked = false;
+    renderUmpireView();
+  }
+
+  function backUmpireToConfirm() {
+    opsUi.umpirePortal.step = 2;
+    renderUmpireView();
+  }
+
+  function resetUmpirePortalToStep1() {
+    opsUi.umpirePortal.step = 1;
+    opsUi.umpirePortal.courtKey = null;
+    opsUi.umpirePortal.matchKey = null;
+    opsUi.umpirePortal.umpireChecked = false;
+    opsUi.umpirePortal.winnerChecked = false;
+    opsUi.umpirePortal.sentSummary = null;
+    renderUmpireView();
+  }
+
+  function setUmpireScore(side, val) {
+    const n = Math.max(0, parseInt(val, 10) || 0);
+    if (side === 0) opsUi.umpirePortal.g1 = n;
+    else opsUi.umpirePortal.g2 = n;
+    opsUi.umpirePortal.umpireChecked = false;
+    opsUi.umpirePortal.winnerChecked = false;
+    renderUmpireView();
+  }
+
+  function setUmpireQuickWinner(side) {
+    const ctx = getUmpireActiveContext();
+    const winG = (ctx && ctx.evData && ctx.evData.matchFormat === 5) ? 3 : 4;
+    if (side === 0) {
+      opsUi.umpirePortal.g1 = winG;
+      if (opsUi.umpirePortal.g2 >= winG) opsUi.umpirePortal.g2 = 0;
+    } else {
+      opsUi.umpirePortal.g2 = winG;
+      if (opsUi.umpirePortal.g1 >= winG) opsUi.umpirePortal.g1 = 0;
+    }
+    opsUi.umpirePortal.umpireChecked = false;
+    opsUi.umpirePortal.winnerChecked = false;
+    renderUmpireView();
+  }
+
+  function toggleUmpireWo(checked) {
+    opsUi.umpirePortal.wo = Boolean(checked);
+    opsUi.umpirePortal.umpireChecked = false;
+    opsUi.umpirePortal.winnerChecked = false;
+    renderUmpireView();
+  }
+
+  function setUmpireWoWinner(side) {
+    opsUi.umpirePortal.woWinner = side === 1 ? 1 : 0;
+    renderUmpireView();
+  }
+
+  function toggleUmpireDoubleCheck(who, checked) {
+    if (who === 'umpire') opsUi.umpirePortal.umpireChecked = Boolean(checked);
+    if (who === 'winner') opsUi.umpirePortal.winnerChecked = Boolean(checked);
+    renderUmpireView();
+  }
+
+  async function submitUmpireResult() {
+    const ctx = getUmpireActiveContext();
+    const u = opsUi.umpirePortal;
+    if (!ctx || !u.umpireChecked || !u.winnerChecked || u.submitting) return;
+
+    const aliases = ctx.evData.schoolAliases || {};
+    const shortSchool = (raw) => {
+      const k = String(raw || '').trim();
+      if (Object.prototype.hasOwnProperty.call(aliases, k) && String(aliases[k] || '').trim()) return String(aliases[k]).trim();
+      return formatSchoolShortName(k);
+    };
+    const pairFmt = (entry) => OopEngine.formatSpectatorPairName(entry, ctx.nameMode, shortSchool);
+    const catalog = OopEngine.buildMatchCatalog({
+      bracketSize: ctx.evData.bracketSize || 16,
+      slots: ctx.evData.slots || [],
+      activeSlotMask: ctx.evData.activeSlotMask || [],
+      results: ctx.evData.results || {},
+      consolation: ctx.evData.consolation || null,
+      labelFormatter: pairFmt
+    });
+    const m = catalog.matchMap[u.matchKey];
+    if (!m) return;
+
+    const winner = u.wo ? u.woWinner : (u.g1 > u.g2 ? 0 : 1);
+    const reportObj = {
+      court: u.courtKey,
+      matchKey: m.key,
+      matchNo: m.matchNo,
+      roundLabel: m.roundLabel,
+      isConsolation: Boolean(m.isConsolation),
+      p1Label: m.p1Label,
+      p2Label: m.p2Label,
+      g1: u.wo ? 0 : u.g1,
+      g2: u.wo ? 0 : u.g2,
+      winner,
+      wo: Boolean(u.wo),
+      umpireChecked: true,
+      winnerChecked: true
+    };
+
+    u.submitting = true;
+    renderUmpireView();
+
+    if (ctx.isStandalone && window.BracketCloud && typeof window.BracketCloud.submitUmpireMatchReport === 'function') {
+      const res = await window.BracketCloud.submitUmpireMatchReport(ctx.tid, ctx.activeEvent.id, reportObj);
+      u.submitting = false;
+      if (!res.ok) {
+        alert('送信に失敗しました: ' + (res.error || '通信エラー'));
+        renderUmpireView();
+        return;
+      }
+    } else {
+      // プレビュー時はローカル承認待ちキューへ追加して本部承認フローを体験可能にする
+      u.submitting = false;
+      opsUi.localPreviewReports.push(Object.assign({}, reportObj, {
+        id: randomId('rep'),
+        evId: ctx.activeEvent.id,
+        status: 'pending',
+        isLocalPreview: true,
+        createdAt: new Date().toISOString()
+      }));
+      showToast('プレビュー報告を進行表の承認待ちバーへ送信しました', 'success');
+    }
+
+    u.sentSummary = {
+      court: reportObj.court,
+      matchNo: reportObj.matchNo,
+      roundLabel: reportObj.roundLabel,
+      p1Label: reportObj.p1Label,
+      p2Label: reportObj.p2Label,
+      scoreText: reportObj.wo ? '棄権 (WO)' : `${reportObj.g1} - ${reportObj.g2}`,
+      winnerLabel: winner === 0 ? reportObj.p1Label : reportObj.p2Label
+    };
+    renderUmpireView();
+  }
+
+  // =========================================================================
   // 6. app.js からのライフサイクルフック接続 ＆ グローバル公開
   // =========================================================================
   window.onAppStateSaved = function () {
@@ -3619,9 +4480,23 @@
   window.onBracketResultsChanged = function () {
     syncOopWithBracket();
     saveToLocalStorage();
+    if (opsUi.editingReportId) {
+      const rep = getCombinedPendingReports().find((r) => r.id === opsUi.editingReportId);
+      opsUi.editingReportId = null;
+      if (rep) finalizeReportResolution(rep, 'approved');
+    }
     updateOopHeaderBadge();
     if (state.mainView === 'oop') renderOopView();
     if (state.mainView === 'spectator') renderSpectatorView();
+  };
+
+  window.onPendingReportsChanged = function (list) {
+    opsUi.pendingReports = Array.isArray(list) ? list : [];
+    renderOopPendingReportsBar();
+  };
+
+  window.onEnterUmpireView = function () {
+    renderUmpireView();
   };
 
   window.onEnterOopView = function () {
@@ -4093,10 +4968,35 @@
   window.closePublishModal = closePublishModal;
   window.updatePublishSettingsFromModal = updatePublishSettingsFromModal;
   window.copyPortalUrl = copyPortalUrl;
+  window.copyUmpireUrl = copyUmpireUrl;
+  window.copySelectedStaffUrl = copySelectedStaffUrl;
+  window.copySelectedStaffPin = copySelectedStaffPin;
+  window.regenerateSelectedStaffPin = regenerateSelectedStaffPin;
+  window.selectPublishStaffEvent = selectPublishStaffEvent;
+  window.setQrPrintLayout = setQrPrintLayout;
+  window.printQrSheet = printQrSheet;
+  window.openUmpirePreviewFromModal = openUmpirePreviewFromModal;
   window.copyStaffUrl = copyStaffUrl;
   window.copyStaffPin = copyStaffPin;
   window.regenerateStaffPin = regenerateStaffPin;
   window.refreshPublishCloudBanner = refreshPublishCloudBanner;
+
+  window.renderStandaloneUmpirePortal = renderStandaloneUmpirePortal;
+  window.selectUmpireEvent = selectUmpireEvent;
+  window.selectUmpireCourt = selectUmpireCourt;
+  window.selectUmpireCourtMatch = selectUmpireCourtMatch;
+  window.confirmUmpireMatch = confirmUmpireMatch;
+  window.backUmpireToConfirm = backUmpireToConfirm;
+  window.resetUmpirePortalToStep1 = resetUmpirePortalToStep1;
+  window.setUmpireScore = setUmpireScore;
+  window.setUmpireQuickWinner = setUmpireQuickWinner;
+  window.toggleUmpireWo = toggleUmpireWo;
+  window.setUmpireWoWinner = setUmpireWoWinner;
+  window.toggleUmpireDoubleCheck = toggleUmpireDoubleCheck;
+  window.submitUmpireResult = submitUmpireResult;
+  window.approvePendingMatchReport = approvePendingMatchReport;
+  window.editPendingMatchReport = editPendingMatchReport;
+  window.rejectPendingMatchReport = rejectPendingMatchReport;
 
   window.getCurrentTournamentBundle = getCurrentTournamentBundle;
   window.replaceTournamentBundle = replaceTournamentBundle;
@@ -4130,15 +5030,18 @@
   // 初期化（app.js の init 完了後に実行）
   initBundle();
 
-  // 通常起動時は軽量「大会ホーム」を表示（?public= / ?staff= / #public / #staff は直接目的画面へ）
+  // 通常起動時は軽量「大会ホーム」を表示（?public= / ?umpire= / ?staff= は直接目的画面へ）
   const launchParams = new URLSearchParams(window.location.search || '');
   const isSpecialBoot = Boolean(
     launchParams.get('public') ||
+    launchParams.get('umpire') ||
     (launchParams.get('staff') && launchParams.get('e')) ||
-    (window.location.hash && (window.location.hash.startsWith('#public') || window.location.hash.startsWith('#staff')))
+    (window.location.hash && (window.location.hash.startsWith('#public') || window.location.hash.startsWith('#umpire') || window.location.hash.startsWith('#staff')))
   );
   if (window.location.hash === '#public') {
     switchMainView('spectator');
+  } else if (window.location.hash === '#umpire') {
+    switchMainView('umpire');
   } else if (!isSpecialBoot) {
     switchMainView('home');
   }

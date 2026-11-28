@@ -11,6 +11,8 @@
       var h = window.location.hash || '';
       if (s.get('public') || h.indexOf('#public?') === 0) {
         document.documentElement.classList.add('standalone-public-boot');
+      } else if (s.get('umpire') || h.indexOf('#umpire?') === 0) {
+        document.documentElement.classList.add('standalone-umpire-boot');
       } else if ((s.get('staff') && s.get('e')) || h.indexOf('#staff?') === 0) {
         document.documentElement.classList.add('standalone-staff-boot');
       }
@@ -966,6 +968,8 @@
           </div>
         </div>
         <div id="oop-conflicts-drawer" class="hidden p-2.5 rounded-lg bg-rose-50 border border-rose-300 text-[11px] space-y-1"></div>
+        <!-- 審判専用ページからの結果報告（承認待ちキュー：案A） -->
+        <div id="oop-pending-reports-bar" class="hidden p-2.5 rounded-xl bg-amber-50 border-2 border-amber-400 text-xs space-y-2 shadow-sm"></div>
       </div>
 
       <!-- 全コート横タイムライン進行ボード作業領域（2分割モード対応） -->
@@ -1065,93 +1069,260 @@
       </div>
     </div>
 
+    <!-- =================================================================== -->
+    <!-- 画面5：審判専用・試合結果報告ページ（3ステップ＋2重チェック）         -->
+    <!-- =================================================================== -->
+    <div id="view-umpire" class="hidden flex-1 min-h-0 flex flex-col overflow-hidden bg-slate-900">
+      <div id="umpire-preview-bar" class="no-print bg-slate-800 border-b border-slate-700 px-3 sm:px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-200 shrink-0">
+        <div class="flex items-center gap-2">
+          <span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-400/40 font-bold text-[11px]">審判専用ページ（プレビュー）</span>
+          <span class="text-[11px] text-slate-400 hidden sm:inline">コート選択 → 対戦相手確認 → スコア入力＆審判＋勝者2重チェック</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="openPublishModal()"
+                  class="px-2.5 py-1 text-[11px] font-bold bg-slate-700 hover:bg-slate-600 text-white rounded-md border border-slate-600 transition">
+            配信・QR設定へ
+          </button>
+          <button onclick="switchMainView('oop')"
+                  class="px-2.5 py-1 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition">
+            進行表へ戻る
+          </button>
+        </div>
+      </div>
+      <div class="flex-1 min-h-0 overflow-hidden p-0 sm:p-4 flex justify-center items-center bg-slate-900/95">
+        <div id="umpire-portal-frame" class="w-full sm:max-w-[430px] h-full sm:max-h-[840px] min-h-0 bg-slate-50 text-slate-900 sm:rounded-2xl shadow-2xl sm:border sm:border-slate-700 overflow-hidden flex flex-col">
+          <!-- JS描画: 審判専用3ステップ画面 -->
+        </div>
+      </div>
+    </div>
+
   </div>
 
-  <!-- 公開設定・QRコード・スタッフPINモーダル -->
-  <div id="publish-modal" class="no-print hidden fixed inset-0 bg-slate-900/60 backdrop-blur-[1px] z-50 flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-2xl w-full max-h-[90vh] overflow-y-auto p-5 space-y-4">
-      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+  <!-- 配信・QRコード設定モーダル（閲覧用・審判用・運営用の3種QR＋1/2/4/8in1印刷） -->
+  <div id="publish-modal" class="no-print hidden fixed inset-0 bg-slate-900/60 backdrop-blur-[1px] z-50 flex items-center justify-center p-2 sm:p-4">
+    <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden">
+      <!-- モーダルヘッダー -->
+      <div class="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between gap-3 shrink-0">
         <div>
-          <h3 class="text-sm font-bold text-slate-900">公開設定・QRコード・会場スタッフPIN</h3>
-          <p class="text-[11px] text-slate-500">生徒・保護者向け画面の公開ルールと、別会場スタッフ用PINを管理します</p>
+          <h3 class="text-sm sm:text-base font-extrabold text-slate-900">配信・QRコード設定</h3>
+          <p class="text-[11px] text-slate-500">用途別に <b>閲覧用・審判用・運営用</b> の3種類のQRを発行し、A4面付け（1/2/4/8in1）で印刷できます</p>
         </div>
-        <button onclick="closePublishModal()" class="text-slate-400 hover:text-slate-700 font-bold px-2 py-1">✕</button>
+        <button onclick="closePublishModal()" class="text-slate-400 hover:text-slate-700 font-bold px-2 py-1 text-base">✕</button>
       </div>
 
-      <!-- クラウド同期ステータスバナー（別端末QR閲覧の可否を明示） -->
-      <div id="pub-cloud-status-banner" class="p-3 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2"></div>
+      <!-- 本体スクロール領域 -->
+      <div class="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+        <!-- クラウド同期ステータスバナー -->
+        <div id="pub-cloud-status-banner" class="p-3 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2"></div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <!-- 左：公開設定・個人情報 -->
-        <div class="space-y-3">
-          <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-3">
-            <div>
-              <div class="text-xs font-bold text-slate-800">生徒・保護者向け公開</div>
-              <div class="text-[10px] text-slate-500">大会終了後はOFFで即時非公開にできます</div>
-            </div>
-            <label class="inline-flex items-center cursor-pointer">
-              <input type="checkbox" id="pub-enabled-checkbox" onchange="updatePublishSettingsFromModal()" class="w-4 h-4 accent-emerald-600" />
-              <span id="pub-enabled-text" class="ml-1.5 text-xs font-bold text-emerald-700">公開中</span>
-            </label>
-          </div>
+        <!-- 3種類のQRカード -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-          <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-            <label class="block text-xs font-bold text-slate-800">閲覧パスコード（任意・合言葉）</label>
-            <input type="text" id="pub-passcode-input" placeholder="空欄ならパスコードなしで閲覧可能"
-                   oninput="updatePublishSettingsFromModal()"
-                   class="w-full px-2.5 py-1.5 text-xs font-bold border border-slate-300 rounded-lg bg-white focus:outline-none focus:border-blue-500" />
-            <p class="text-[10px] text-slate-500">設定すると閲覧時にパスコード入力が必要になります（検索エンジン非掲載 noindex 対応済）</p>
-          </div>
-
-          <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-            <div class="text-xs font-bold text-slate-800">選手名の表示形式（個人情報配慮）</div>
-            <div class="grid grid-cols-2 gap-2">
-              <label class="flex items-center gap-1.5 p-2 rounded-lg border border-slate-200 bg-white cursor-pointer text-xs font-bold">
-                <input type="radio" name="pub-name-mode" value="full" onchange="updatePublishSettingsFromModal()" class="accent-blue-600" />
-                <span>フルネーム</span>
-              </label>
-              <label class="flex items-center gap-1.5 p-2 rounded-lg border border-slate-200 bg-white cursor-pointer text-xs font-bold">
-                <input type="radio" name="pub-name-mode" value="surname" onchange="updatePublishSettingsFromModal()" class="accent-blue-600" />
-                <span>名字のみ</span>
+          <!-- 1. 閲覧用QR（生徒・保護者向け・閲覧専用） -->
+          <div class="rounded-2xl border border-emerald-200 bg-slate-50/70 flex flex-col overflow-hidden">
+            <div class="px-4 py-2.5 bg-emerald-50/90 border-b border-emerald-200 flex items-center justify-between gap-2">
+              <div class="flex items-center gap-1.5">
+                <span class="px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-emerald-600 text-white">閲覧用</span>
+                <span class="text-xs font-extrabold text-slate-900">生徒・保護者向け</span>
+              </div>
+              <label class="inline-flex items-center cursor-pointer bg-white px-2 py-0.5 rounded-lg border border-emerald-200">
+                <input type="checkbox" id="pub-enabled-checkbox" onchange="updatePublishSettingsFromModal()" class="w-3.5 h-3.5 accent-emerald-600" />
+                <span id="pub-enabled-text" class="ml-1 text-[11px] font-extrabold text-emerald-700">公開ON</span>
               </label>
             </div>
+
+            <div class="p-3.5 flex-1 flex flex-col justify-between space-y-3">
+              <p class="text-[11px] text-slate-600 leading-relaxed">
+                コート状況・トーナメント・マイチェックをリアルタイム表示（<b>閲覧専用・入力不可</b>）。
+              </p>
+
+              <div id="pub-qr-card-area" class="bg-white p-3 rounded-xl border border-slate-200 flex flex-col items-center gap-2 transition">
+                <div id="pub-qr-box" class="bg-white p-1.5 rounded-lg border border-slate-100 flex items-center justify-center min-w-[140px] min-h-[140px]"></div>
+                <input type="text" id="pub-portal-url-input" readonly
+                       class="w-full px-2 py-1 text-[10px] font-mono bg-slate-50 border border-slate-200 rounded text-slate-600" />
+                <div class="w-full grid grid-cols-2 gap-1.5">
+                  <button onclick="copyPortalUrl()"
+                          class="py-1.5 text-[11px] font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition">
+                    URLコピー
+                  </button>
+                  <button onclick="printQrSheet('public')"
+                          class="py-1.5 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition">
+                    🖨 QR印刷
+                  </button>
+                </div>
+              </div>
+
+              <!-- 閲覧用オプション -->
+              <div class="space-y-2 pt-2 border-t border-slate-200">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-[11px] font-bold text-slate-700">選手名の表示</span>
+                  <div class="flex items-center gap-2 text-[11px] font-bold">
+                    <label class="inline-flex items-center gap-1 cursor-pointer">
+                      <input type="radio" name="pub-name-mode" value="full" onchange="updatePublishSettingsFromModal()" class="accent-emerald-600" />
+                      <span>フルネーム</span>
+                    </label>
+                    <label class="inline-flex items-center gap-1 cursor-pointer">
+                      <input type="radio" name="pub-name-mode" value="surname" onchange="updatePublishSettingsFromModal()" class="accent-emerald-600" />
+                      <span>名字のみ</span>
+                    </label>
+                  </div>
+                </div>
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-[11px] font-bold text-slate-700 shrink-0">パスコード</span>
+                  <input type="text" id="pub-passcode-input" placeholder="なし（任意）"
+                         oninput="updatePublishSettingsFromModal()"
+                         class="w-36 px-2 py-1 text-[11px] font-bold border border-slate-300 rounded-lg bg-white focus:outline-none focus:border-emerald-500" />
+                </div>
+                <button onclick="closePublishModal(); switchMainView('spectator');"
+                        class="w-full py-1.5 text-[11px] font-bold bg-white hover:bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg transition">
+                  公開ビューをプレビュー →
+                </button>
+              </div>
+            </div>
           </div>
 
-          <!-- 種目別 会場スタッフPIN -->
-          <div class="p-3 rounded-xl bg-amber-50/70 border border-amber-200 space-y-2">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-bold text-amber-950">会場運営スタッフ用 PIN（種目別）</span>
-              <span class="text-[10px] text-amber-800 bg-amber-200/70 px-1.5 py-0.5 rounded font-bold">別会場リアルタイム同期</span>
+          <!-- 2. 審判用QR（結果報告専用・全コート共通1種類＋報告機能ON/OFF） -->
+          <div class="rounded-2xl border-2 border-amber-400 bg-amber-50/35 flex flex-col overflow-hidden">
+            <div class="px-4 py-2.5 bg-amber-100/80 border-b border-amber-300 flex items-center justify-between gap-2">
+              <div class="flex items-center gap-1.5">
+                <span class="px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-amber-500 text-slate-950">審判用</span>
+                <span class="text-xs font-extrabold text-slate-900">試合結果の報告</span>
+              </div>
+              <!-- 審判用のすぐ横：報告機能 ON / OFF -->
+              <label class="inline-flex items-center cursor-pointer bg-white px-2 py-0.5 rounded-lg border border-amber-300 shadow-sm">
+                <input type="checkbox" id="pub-umpire-report-checkbox" onchange="updatePublishSettingsFromModal()" class="w-3.5 h-3.5 accent-amber-600" />
+                <span id="pub-umpire-report-text" class="ml-1 text-[11px] font-extrabold text-amber-900">報告機能 ON</span>
+              </label>
             </div>
-            <div id="pub-staff-pins-list" class="space-y-1.5 max-h-36 overflow-y-auto"></div>
+
+            <div class="p-3.5 flex-1 flex flex-col justify-between space-y-3">
+              <p class="text-[11px] text-slate-700 leading-relaxed">
+                <b>全コート共通の1種類</b>。コート選択 → 対戦確認 → <b>審判＋勝者ペア2重チェック</b>後に本部へ報告します。
+              </p>
+
+              <div id="pub-umpire-qr-on-box" class="bg-white p-3 rounded-xl border border-amber-200 flex flex-col items-center gap-2">
+                <div id="pub-umpire-qr-box" class="bg-white p-1.5 rounded-lg border border-slate-100 flex items-center justify-center min-w-[140px] min-h-[140px]"></div>
+                <input type="text" id="pub-umpire-url-input" readonly
+                       class="w-full px-2 py-1 text-[10px] font-mono bg-slate-50 border border-slate-200 rounded text-slate-600" />
+                <div class="w-full grid grid-cols-2 gap-1.5">
+                  <button onclick="copyUmpireUrl()"
+                          class="py-1.5 text-[11px] font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition">
+                    URLコピー
+                  </button>
+                  <button onclick="printQrSheet('umpire')"
+                          class="py-1.5 text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg transition">
+                    🖨 QR印刷
+                  </button>
+                </div>
+              </div>
+
+              <div id="pub-umpire-qr-off-box" class="hidden bg-white p-5 rounded-xl border border-dashed border-slate-300 text-center space-y-1.5">
+                <div class="text-xs font-extrabold text-slate-600">審判からの結果報告は OFF です</div>
+                <div class="text-[11px] text-slate-500 leading-relaxed">生徒スマホ不可の大会などではOFFのまま、本部／スタッフ進行表から直接入力してください。</div>
+              </div>
+
+              <div class="space-y-1.5 pt-2 border-t border-amber-200 text-[11px]">
+                <div class="flex items-center justify-between">
+                  <span class="font-bold text-slate-700">反映方式</span>
+                  <span class="px-2 py-0.5 rounded-full bg-white border border-amber-300 text-amber-950 font-bold text-[10px]">本部1タップ承認（案A）</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="font-bold text-slate-700">誤送信ガード</span>
+                  <span class="px-2 py-0.5 rounded-full bg-white border border-amber-300 text-amber-950 font-bold text-[10px]">審判＋勝者 2重チェック必須</span>
+                </div>
+                <button onclick="openUmpirePreviewFromModal()"
+                        class="w-full py-1.5 text-[11px] font-bold bg-white hover:bg-amber-100/70 text-amber-950 border border-amber-300 rounded-lg transition">
+                  審判専用ページをプレビュー →
+                </button>
+              </div>
+            </div>
           </div>
+
+          <!-- 3. 運営用QR（会場スタッフ向け・種目別PIN付） -->
+          <div class="rounded-2xl border border-indigo-200 bg-slate-50/70 flex flex-col overflow-hidden">
+            <div class="px-4 py-2.5 bg-indigo-50/90 border-b border-indigo-200 flex items-center justify-between gap-2">
+              <div class="flex items-center gap-1.5">
+                <span class="px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-indigo-600 text-white">運営用</span>
+                <span class="text-xs font-extrabold text-slate-900">会場スタッフ向け</span>
+              </div>
+              <span class="text-[10px] font-bold text-indigo-800 bg-white px-2 py-0.5 rounded-lg border border-indigo-200">PIN認証付</span>
+            </div>
+
+            <div class="p-3.5 flex-1 flex flex-col justify-between space-y-3">
+              <div class="space-y-2">
+                <p class="text-[11px] text-slate-600 leading-relaxed">
+                  別会場の先生・補助員が進行表操作・審判報告の承認・アナウンス配信を行えます。
+                </p>
+                <div class="flex items-center gap-2">
+                  <span class="text-[11px] font-bold text-slate-700 shrink-0">対象種目</span>
+                  <select id="pub-staff-event-select" onchange="selectPublishStaffEvent(this.value)"
+                          class="flex-1 min-w-0 px-2 py-1 text-[11px] font-bold border border-slate-300 rounded-lg bg-white">
+                  </select>
+                </div>
+              </div>
+
+              <div class="bg-white p-3 rounded-xl border border-slate-200 flex flex-col items-center gap-2">
+                <div id="pub-staff-qr-box" class="bg-white p-1.5 rounded-lg border border-slate-100 flex items-center justify-center min-w-[140px] min-h-[140px]"></div>
+                <input type="text" id="pub-staff-url-input" readonly
+                       class="w-full px-2 py-1 text-[10px] font-mono bg-slate-50 border border-slate-200 rounded text-slate-600" />
+                <div class="w-full grid grid-cols-2 gap-1.5">
+                  <button onclick="copySelectedStaffUrl()"
+                          class="py-1.5 text-[11px] font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition">
+                    URL＋PINコピー
+                  </button>
+                  <button onclick="printQrSheet('staff')"
+                          class="py-1.5 text-[11px] font-bold bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition">
+                    🖨 QR印刷
+                  </button>
+                </div>
+              </div>
+
+              <!-- 選択中種目のスタッフPIN操作 -->
+              <div class="pt-2 border-t border-slate-200 flex items-center justify-between gap-2">
+                <div>
+                  <div class="text-[10px] font-bold text-slate-500">スタッフPIN（4桁）</div>
+                  <div id="pub-staff-pin-value" class="text-base font-mono font-extrabold text-indigo-900 tracking-widest">0000</div>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <button onclick="copySelectedStaffPin()" class="px-2 py-1 text-[11px] font-bold bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded-lg transition">コピー</button>
+                  <button onclick="regenerateSelectedStaffPin()" class="px-2 py-1 text-[11px] font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-lg transition">再発行</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- モーダルフッター：QR印刷の面付け設定（1in1 / 2in1 / 4in1 / 8in1）＋まとめ印刷 -->
+      <div class="px-4 sm:px-5 py-3 border-t border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-2.5 shrink-0">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-[11px] font-extrabold text-slate-700">🖨 QR印刷の面付け（A4）:</span>
+          <div class="inline-flex bg-white p-0.5 rounded-lg border border-slate-300 gap-0.5 text-[11px] font-bold">
+            <button id="btn-qr-layout-1in1" onclick="setQrPrintLayout('1in1')" class="px-2.5 py-1 rounded-md text-slate-600 hover:text-slate-900 transition" title="A4に大きく1枚（掲示板向け）">1in1</button>
+            <button id="btn-qr-layout-2in1" onclick="setQrPrintLayout('2in1')" class="px-2.5 py-1 rounded-md text-slate-600 hover:text-slate-900 transition" title="A4に2枚並べて印刷（切って2か所へ掲示）">2in1</button>
+            <button id="btn-qr-layout-4in1" onclick="setQrPrintLayout('4in1')" class="px-2.5 py-1 rounded-md bg-slate-900 text-white shadow-sm transition" title="A4に4枚並べて印刷（コート掲示・配布におすすめ）">4in1</button>
+            <button id="btn-qr-layout-8in1" onclick="setQrPrintLayout('8in1')" class="px-2.5 py-1 rounded-md text-slate-600 hover:text-slate-900 transition" title="A4に8枚並べて印刷（バインダー・引率配布向け）">8in1</button>
+          </div>
+          <span id="qr-layout-desc" class="text-[10px] text-slate-500 hidden md:inline">A4に4枚（切り取り線付き）</span>
         </div>
 
-        <!-- 右：QRコード ＆ URL -->
-        <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col items-center justify-between text-center space-y-3">
-          <div class="space-y-1">
-            <div class="text-xs font-bold text-slate-800">生徒・保護者用 大会ポータル QRコード</div>
-            <div class="text-[10px] text-slate-500">1つのQRから全種目のコート状況・トーナメント表を確認可能</div>
-          </div>
-          <div id="pub-qr-box" class="bg-white p-3 rounded-xl border border-slate-200 shadow-sm flex items-center justify-center min-w-[168px] min-h-[168px]"></div>
-          <div class="w-full space-y-1.5">
-            <input type="text" id="pub-portal-url-input" readonly
-                   class="w-full px-2.5 py-1.5 text-[11px] font-mono bg-white border border-slate-300 rounded-lg text-slate-700" />
-            <div class="grid grid-cols-2 gap-2">
-              <button onclick="copyPortalUrl()"
-                      class="py-1.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition">
-                URLをコピー
-              </button>
-              <button onclick="closePublishModal(); switchMainView('spectator');"
-                      class="py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition">
-                公開ビューを開く
-              </button>
-            </div>
-          </div>
+        <div class="flex items-center gap-2">
+          <button onclick="printQrSheet('all')"
+                  class="px-3 py-1.5 text-xs font-bold bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 rounded-lg transition">
+            3種QRをまとめて印刷
+          </button>
+          <button onclick="closePublishModal()"
+                  class="px-4 py-1.5 text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white rounded-lg transition">
+            閉じる
+          </button>
         </div>
       </div>
     </div>
   </div>
+
+  <!-- QR印刷専用シート（印刷時のみ表示：1in1 / 2in1 / 4in1 / 8in1 面付け対応） -->
+  <div id="qr-print-sheet" class="hidden"></div>
 
   <!-- 種目追加・設定モーダル -->
   <div id="event-modal" class="no-print hidden fixed inset-0 bg-slate-900/50 backdrop-blur-[1px] z-50 flex items-center justify-center p-4">
